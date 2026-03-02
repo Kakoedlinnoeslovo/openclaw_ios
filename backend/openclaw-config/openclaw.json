@@ -1,0 +1,30 @@
+{
+  "gateway": {
+    "auth": {
+      "mode": "token"
+    },
+    "controlUi": {
+      "enabled": false
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "openai/gpt-4o-mini",
+      "sandbox": {
+        "mode": "off"
+      }
+    },
+    "list": []
+  },
+  "skills": {
+    "allowBundled": ["*"]
+  },
+  "env": {}
+}

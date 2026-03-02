@@ -1,0 +1,155 @@
+services:
+  # ── Reverse Proxy ──────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api-gateway
+
+  # ── Config init (seeds openclaw.json before gateway starts) ──
+  config-init:
+    image: busybox
+    volumes:
+      - openclaw_home:/data
+      - ./openclaw-config/openclaw.json:/seed/openclaw.json:ro
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        if [ ! -f /data/openclaw.json ]; then
+          cp /seed/openclaw.json /data/openclaw.json
+          echo "Seeded openclaw.json"
+        else
+          echo "Config already exists"
+        fi
+
+  # ── API Gateway (Fastify/Express) ──────────────
+  api-gateway:
+    build: ./api-gateway
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - DATABASE_URL=postgresql://openclaw:${DB_PASSWORD}@postgres:5432/openclaw
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET}
+      - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:18789
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - OPENCLAW_HOME=/openclaw-home
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - openclaw_home:/openclaw-home
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      openclaw-gateway:
+        condition: service_healthy
+
+  # ── BullMQ Task Worker ─────────────────────────
+  worker:
+    build: ./api-gateway
+    restart: unless-stopped
+    command: ["node", "src/worker.js"]
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - DATABASE_URL=postgresql://openclaw:${DB_PASSWORD}@postgres:5432/openclaw
+      - REDIS_URL=redis://redis:6379
+      - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:18789
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - OPENCLAW_HOME=/openclaw-home
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - openclaw_home:/openclaw-home
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      openclaw-gateway:
+        condition: service_healthy
+
+  # ── OpenClaw Gateway (built from local repo) ────
+  openclaw-gateway:
+    build:
+      context: ./openclaw
+      dockerfile: Dockerfile
+    image: openclaw:local
+    restart: unless-stopped
+    user: "0:0"
+    environment:
+      - HOME=/home/node
+      - TERM=xterm-256color
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - openclaw_home:/home/node/.openclaw
+    depends_on:
+      config-init:
+        condition: service_completed_successfully
+    command:
+      [
+        "node", "dist/index.js", "gateway",
+        "--bind", "lan",
+        "--port", "18789",
+        "--allow-unconfigured",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD", "node", "-e",
+          "fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── PostgreSQL ─────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=openclaw
+      - POSTGRES_USER=openclaw
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openclaw"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (cache + BullMQ + pub/sub) ───────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:
+  openclaw_home:

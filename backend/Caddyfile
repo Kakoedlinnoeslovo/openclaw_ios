@@ -1,0 +1,16 @@
+# Development: plain HTTP on port 80
+# Production: replace :80 with your domain for automatic TLS
+#   e.g.  api.your-openclaw-server.com {
+
+:80 {
+	# WebSocket upgrade for /ws/*
+	@ws {
+		path /ws/*
+		header Connection *Upgrade*
+		header Upgrade    websocket
+	}
+	reverse_proxy @ws api-gateway:3000
+
+	# Everything else → API gateway
+	reverse_proxy api-gateway:3000
+}
