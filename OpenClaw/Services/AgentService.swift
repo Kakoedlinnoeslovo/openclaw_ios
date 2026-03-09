@@ -45,6 +45,8 @@ final class AgentService {
         agents.removeAll { $0.id == id }
     }
 
+    // MARK: - Skill Management
+
     func installSkill(agentId: String, skillId: String) async throws -> Agent {
         struct InstallBody: Codable { let skillId: String }
         let updated: Agent = try await APIClient.shared.post(
@@ -57,6 +59,26 @@ final class AgentService {
         return updated
     }
 
+    func installClawHubSkill(agentId: String, slug: String) async throws -> ClawHubInstallResponse {
+        struct ClawHubBody: Codable { let slug: String }
+        let response: ClawHubInstallResponse = try await APIClient.shared.post(
+            "/agents/\(agentId)/skills/clawhub",
+            body: ClawHubBody(slug: slug)
+        )
+        if let index = agents.firstIndex(where: { $0.id == agentId }) {
+            agents[index] = response.agent
+        }
+        return response
+    }
+
+    func setSkillCredentials(agentId: String, skillId: String, credentials: [String: String]) async throws {
+        struct CredBody: Codable { let credentials: [String: String] }
+        let _: EmptyResult = try await APIClient.shared.post(
+            "/agents/\(agentId)/skills/\(skillId)/credentials",
+            body: CredBody(credentials: credentials)
+        )
+    }
+
     func removeSkill(agentId: String, skillId: String) async throws {
         try await APIClient.shared.delete("/agents/\(agentId)/skills/\(skillId)")
         if let index = agents.firstIndex(where: { $0.id == agentId }),
@@ -64,4 +86,62 @@ final class AgentService {
             agents[index].skills.remove(at: skillIndex)
         }
     }
+
+    func setSkillEnabled(agentId: String, skillId: String, enabled: Bool) async throws -> Agent {
+        struct ToggleBody: Codable { let enabled: Bool }
+        let updated: Agent = try await APIClient.shared.patch(
+            "/agents/\(agentId)/skills/\(skillId)",
+            body: ToggleBody(enabled: enabled)
+        )
+        if let index = agents.firstIndex(where: { $0.id == agentId }) {
+            agents[index] = updated
+        }
+        return updated
+    }
+
+    func updateSkillConfig(agentId: String, skillId: String, config: [String: AnyCodableValue]) async throws -> Agent {
+        struct ConfigBody: Codable { let config: [String: AnyCodableValue] }
+        let updated: Agent = try await APIClient.shared.patch(
+            "/agents/\(agentId)/skills/\(skillId)",
+            body: ConfigBody(config: config)
+        )
+        if let index = agents.firstIndex(where: { $0.id == agentId }) {
+            agents[index] = updated
+        }
+        return updated
+    }
 }
+
+// MARK: - Response Types
+
+struct ClawHubInstallResponse: Codable {
+    let agent: Agent
+    let setupRequired: Bool?
+    let setupRequirements: [SkillSetupRequirement]?
+
+    init(from decoder: Decoder) throws {
+        let agentFields = try Agent(from: decoder)
+        self.agent = agentFields
+
+        let container = try decoder.container(keyedBy: ExtraKeys.self)
+        self.setupRequired = try container.decodeIfPresent(Bool.self, forKey: .setupRequired)
+        self.setupRequirements = try container.decodeIfPresent([SkillSetupRequirement].self, forKey: .setupRequirements)
+    }
+
+    private enum ExtraKeys: String, CodingKey {
+        case setupRequired
+        case setupRequirements
+    }
+}
+
+struct SkillSetupRequirement: Codable, Identifiable {
+    let type: String
+    let key: String
+    let label: String
+    let description: String
+    let sensitive: Bool
+
+    var id: String { key }
+}
+
+private struct EmptyResult: Codable {}

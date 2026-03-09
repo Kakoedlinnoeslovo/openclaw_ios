@@ -2,10 +2,11 @@ import SwiftUI
 
 struct AgentDetailView: View {
     @Environment(AppTheme.self) private var theme
-    let agent: Agent
+    @State var agent: Agent
 
     @State private var showSkillBrowser = false
     @State private var showChat = false
+    @State private var agentService = AgentService.shared
 
     var body: some View {
         ScrollView {
@@ -104,8 +105,18 @@ struct AgentDetailView: View {
 
     private var installedSkillsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Installed Skills")
-                .font(.headline)
+            HStack {
+                Text("Installed Skills")
+                    .font(.headline)
+                Spacer()
+                Text("\(agent.skills.count)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.quaternary)
+                    .clipShape(Capsule())
+            }
 
             if agent.skills.isEmpty {
                 HStack {
@@ -125,29 +136,64 @@ struct AgentDetailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
                 ForEach(agent.skills) { skill in
-                    HStack(spacing: 12) {
-                        Image(systemName: skill.icon)
-                            .font(.body)
-                            .foregroundStyle(theme.accent)
-                            .frame(width: 36, height: 36)
-                            .background(theme.accent.opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                        Text(skill.name)
-                            .font(.subheadline.weight(.medium))
-
-                        Spacer()
-
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(theme.accent)
-                            .font(.subheadline)
-                    }
-                    .padding(12)
-                    .background(.quaternary.opacity(0.3))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    installedSkillRow(skill)
                 }
             }
         }
+    }
+
+    private func installedSkillRow(_ skill: Agent.InstalledSkill) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: skill.icon)
+                .font(.body)
+                .foregroundStyle(skill.isEnabled ? theme.accent : .secondary)
+                .frame(width: 36, height: 36)
+                .background((skill.isEnabled ? theme.accent : Color.secondary).opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(skill.name)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(skill.isEnabled ? .primary : .secondary)
+
+                    if skill.source == "clawhub" {
+                        Text("ClawHub")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(.orange)
+                            .clipShape(Capsule())
+                    }
+                }
+                Text("v\(skill.version)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { skill.isEnabled },
+                set: { newValue in
+                    Task {
+                        if let updated = try? await agentService.setSkillEnabled(
+                            agentId: agent.id,
+                            skillId: skill.skillId,
+                            enabled: newValue
+                        ) {
+                            agent = updated
+                        }
+                    }
+                }
+            ))
+            .labelsHidden()
+            .scaleEffect(0.8)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.3))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var recentTasksSection: some View {

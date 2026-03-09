@@ -7,7 +7,7 @@ final class SubscriptionService {
 
     var products: [Product] = []
     var purchasedProductIDs: Set<String> = []
-    var currentTier: User.SubscriptionTier = .free
+    var currentTier: User.SubscriptionTier = .team
     var usage: UsageStats?
     var isLoading = false
 

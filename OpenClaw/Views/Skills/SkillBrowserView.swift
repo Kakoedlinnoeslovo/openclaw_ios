@@ -19,6 +19,10 @@ struct SkillBrowserView: View {
                     LazyVStack(spacing: 12) {
                         clawHubBanner
 
+                        if !skillService.recommendedSkills.isEmpty && searchText.isEmpty && selectedCategory == nil {
+                            recommendedSection
+                        }
+
                         ForEach(filteredSkills) { skill in
                             SkillCardView(skill: skill, agentId: agentId)
                                 .onTapGesture { selectedSkill = skill }
@@ -35,7 +39,7 @@ struct SkillBrowserView: View {
                 SkillDetailView(skill: skill, agentId: agentId)
             }
             .sheet(isPresented: $showClawHub) {
-                ClawHubView()
+                ClawHubView(agentId: agentId)
             }
             .overlay {
                 if skillService.isLoading && skillService.skills.isEmpty {
@@ -43,18 +47,74 @@ struct SkillBrowserView: View {
                 }
             }
             .task {
-                try? await skillService.fetchCatalog()
+                try? await skillService.fetchCatalog(agentId: agentId)
+                try? await skillService.fetchRecommended(agentId: agentId)
             }
             .onChange(of: searchText) {
                 Task {
                     try? await Task.sleep(for: .milliseconds(300))
                     try? await skillService.fetchCatalog(
                         category: selectedCategory,
-                        search: searchText.isEmpty ? nil : searchText
+                        search: searchText.isEmpty ? nil : searchText,
+                        agentId: agentId
                     )
                 }
             }
         }
+    }
+
+    // MARK: - Recommended Section
+
+    private var recommendedSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "star.fill")
+                    .foregroundStyle(.yellow)
+                Text("Recommended for You")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .padding(.horizontal, 2)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(skillService.recommendedSkills) { skill in
+                        Button { selectedSkill = skill } label: {
+                            recommendedCard(skill)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func recommendedCard(_ skill: Skill) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: skill.category.icon)
+                .font(.system(size: 20))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(
+                    LinearGradient(
+                        colors: [.blue, .purple.opacity(0.8)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            Text(skill.name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text(skill.category.rawValue)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: 100)
+        .padding(10)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - ClawHub Banner
@@ -134,7 +194,8 @@ struct SkillBrowserView: View {
             Task {
                 try? await skillService.fetchCatalog(
                     category: category,
-                    search: searchText.isEmpty ? nil : searchText
+                    search: searchText.isEmpty ? nil : searchText,
+                    agentId: agentId
                 )
             }
         } label: {

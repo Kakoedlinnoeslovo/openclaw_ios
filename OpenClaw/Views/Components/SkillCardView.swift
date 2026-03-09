@@ -69,13 +69,19 @@ struct SkillCardView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 6) {
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 10))
-                    Text(formatCount(skill.downloads))
-                        .font(.caption2)
+                if skill.isInstalled == true {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.green)
+                } else {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 10))
+                        Text(formatCount(skill.downloads))
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.tertiary)
                 }
-                .foregroundStyle(.tertiary)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))

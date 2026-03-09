@@ -16,6 +16,9 @@ struct SkillDetailView: View {
     @State private var agentService = AgentService.shared
     @State private var pendingInstallAfterPurchase = false
     @State private var pendingInstallAfterCreation = false
+    @State private var isEnabled = true
+    @State private var isRemoving = false
+    @State private var showRemoveConfirm = false
 
     var body: some View {
         NavigationStack {
@@ -27,7 +30,13 @@ struct SkillDetailView: View {
 
                     descriptionSection
 
-                    permissionsSection
+                    if !skill.permissions.isEmpty {
+                        permissionsSection
+                    }
+
+                    if installed, let agentId {
+                        installedControls(agentId: agentId)
+                    }
 
                     installButton
                 }
@@ -49,10 +58,17 @@ struct SkillDetailView: View {
             .sheet(isPresented: $showCreateAgent, onDismiss: handleCreateAgentDismiss) {
                 AgentCreationView()
             }
+            .confirmationDialog("Remove Skill", isPresented: $showRemoveConfirm) {
+                Button("Remove", role: .destructive) { removeSkill() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will remove \(skill.name) from your agent. You can reinstall it later.")
+            }
             .task {
                 if agentId == nil {
                     try? await agentService.fetchAgents()
                 }
+                checkInstalledState()
             }
         }
     }
@@ -92,6 +108,16 @@ struct SkillDetailView: View {
                     .padding(.vertical, 4)
                     .background(.quaternary)
                     .clipShape(Capsule())
+
+                if installed {
+                    Label("Installed", systemImage: "checkmark.circle.fill")
+                        .font(.caption2.weight(.medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.green.opacity(0.1))
+                        .foregroundStyle(.green)
+                        .clipShape(Capsule())
+                }
             }
         }
     }
@@ -151,40 +177,85 @@ struct SkillDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // MARK: - Installed Controls
+
+    private func installedControls(agentId: String) -> some View {
+        VStack(spacing: 12) {
+            HStack {
+                Label("Enabled", systemImage: "bolt.fill")
+                    .font(.subheadline.weight(.medium))
+
+                Spacer()
+
+                Toggle("", isOn: $isEnabled)
+                    .labelsHidden()
+                    .onChange(of: isEnabled) { _, newValue in
+                        Task {
+                            _ = try? await agentService.setSkillEnabled(
+                                agentId: agentId,
+                                skillId: skill.id,
+                                enabled: newValue
+                            )
+                        }
+                    }
+            }
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            Button(role: .destructive) {
+                showRemoveConfirm = true
+            } label: {
+                HStack {
+                    Image(systemName: "trash")
+                    Text("Remove Skill")
+                }
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .disabled(isRemoving)
+        }
+    }
+
     private var needsProUpgrade: Bool {
         skill.requiresPro && subscription.currentTier == .free
     }
 
     private var installButton: some View {
-        Button {
-            if needsProUpgrade {
-                pendingInstallAfterPurchase = true
-                showPaywall = true
-                return
-            }
-            beginInstall()
-        } label: {
-            HStack {
-                if isInstalling {
-                    ProgressView()
-                        .tint(.white)
-                } else if installed {
-                    Label("Installed", systemImage: "checkmark")
-                } else if needsProUpgrade {
-                    Label("Unlock with Pro", systemImage: "lock.fill")
-                } else if agentId == nil && agentService.agents.isEmpty {
-                    Label("Create Agent & Install", systemImage: "plus.circle.fill")
-                } else {
-                    Label("Install Skill", systemImage: "arrow.down.circle.fill")
+        Group {
+            if !installed {
+                Button {
+                    if needsProUpgrade {
+                        pendingInstallAfterPurchase = true
+                        showPaywall = true
+                        return
+                    }
+                    beginInstall()
+                } label: {
+                    HStack {
+                        if isInstalling {
+                            ProgressView()
+                                .tint(.white)
+                        } else if needsProUpgrade {
+                            Label("Unlock with Pro", systemImage: "lock.fill")
+                        } else if agentId == nil && agentService.agents.isEmpty {
+                            Label("Create Agent & Install", systemImage: "plus.circle.fill")
+                        } else {
+                            Label("Install Skill", systemImage: "arrow.down.circle.fill")
+                        }
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(needsProUpgrade ? Color(.systemGray3) : theme.accent)
+                .disabled(isInstalling)
             }
-            .font(.headline)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(needsProUpgrade ? Color(.systemGray3) : theme.accent)
-        .disabled(isInstalling || installed)
     }
 
     private var agentPickerSheet: some View {
@@ -247,6 +318,22 @@ struct SkillDetailView: View {
         .presentationDetents([.medium])
     }
 
+    // MARK: - Actions
+
+    private func checkInstalledState() {
+        guard let agentId else {
+            installed = skill.isInstalled ?? false
+            return
+        }
+        if let agent = agentService.agents.first(where: { $0.id == agentId }) {
+            let installedSkill = agent.skills.first(where: { $0.skillId == skill.id })
+            installed = installedSkill != nil
+            isEnabled = installedSkill?.isEnabled ?? true
+        } else {
+            installed = skill.isInstalled ?? false
+        }
+    }
+
     private func handlePaywallDismiss() {
         guard pendingInstallAfterPurchase else { return }
         pendingInstallAfterPurchase = false
@@ -282,6 +369,17 @@ struct SkillDetailView: View {
             _ = try? await AgentService.shared.installSkill(agentId: targetAgentId, skillId: skill.id)
             isInstalling = false
             installed = true
+            isEnabled = true
+        }
+    }
+
+    private func removeSkill() {
+        guard let agentId else { return }
+        isRemoving = true
+        Task {
+            try? await AgentService.shared.removeSkill(agentId: agentId, skillId: skill.id)
+            isRemoving = false
+            installed = false
         }
     }
 

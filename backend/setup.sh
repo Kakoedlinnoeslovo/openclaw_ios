@@ -47,6 +47,13 @@ echo "Starting services …"
 docker compose up -d
 
 echo ""
+echo "Waiting for onboarding to complete …"
+docker compose logs -f onboard 2>/dev/null | while read -r line; do
+  echo "  $line"
+  echo "$line" | grep -q '\[onboard\] Done\|Already onboarded' && break
+done
+
+echo ""
 echo "All services started.  Endpoints:"
 echo "  API Gateway:      http://localhost:3000"
 echo "  WebSocket:        ws://localhost:3000/ws/agents/:agentId"

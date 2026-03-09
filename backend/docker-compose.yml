@@ -30,7 +30,50 @@ services:
           echo "Config already exists"
         fi
 
-  # ── API Gateway (Fastify/Express) ──────────────
+  # ── Onboard (runs openclaw onboard once after gateway is healthy) ──
+  onboard:
+    image: openclaw:local
+    user: "0:0"
+    environment:
+      - HOME=/home/node
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+    volumes:
+      - openclaw_home:/home/node/.openclaw
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        if grep -q '"wizard"' /home/node/.openclaw/openclaw.json 2>/dev/null; then
+          echo "[onboard] Already onboarded — skipping"
+          exit 0
+        fi
+        echo "[onboard] Running openclaw onboard …"
+        OB_AUTH="skip"
+        OB_EXTRA=""
+        if [ -n "$$OPENAI_API_KEY" ]; then
+          OB_AUTH="openai-api-key"
+          OB_EXTRA="--openai-api-key $$OPENAI_API_KEY"
+        elif [ -n "$$ANTHROPIC_API_KEY" ]; then
+          OB_AUTH="anthropic-api-key"
+          OB_EXTRA="--anthropic-api-key $$ANTHROPIC_API_KEY"
+        fi
+        openclaw onboard --non-interactive \
+          --auth-choice "$$OB_AUTH" \
+          $$OB_EXTRA \
+          --secret-input-mode plaintext \
+          --gateway-auth token \
+          --gateway-token "$$OPENCLAW_GATEWAY_TOKEN" \
+          --accept-risk
+        echo "[onboard] Done"
+
+  # ── API Gateway (Express) ──────────────────────
   api-gateway:
     build: ./api-gateway
     restart: unless-stopped
@@ -46,6 +89,7 @@ services:
       - OPENCLAW_HOME=/openclaw-home
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
     volumes:
       - openclaw_home:/openclaw-home
     depends_on:
@@ -55,6 +99,8 @@ services:
         condition: service_healthy
       openclaw-gateway:
         condition: service_healthy
+      onboard:
+        condition: service_completed_successfully
 
   # ── BullMQ Task Worker ─────────────────────────
   worker:
@@ -70,6 +116,7 @@ services:
       - OPENCLAW_HOME=/openclaw-home
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
     volumes:
       - openclaw_home:/openclaw-home
     depends_on:
@@ -79,6 +126,8 @@ services:
         condition: service_healthy
       openclaw-gateway:
         condition: service_healthy
+      onboard:
+        condition: service_completed_successfully
 
   # ── OpenClaw Gateway (built from local repo) ────
   openclaw-gateway:
@@ -94,8 +143,10 @@ services:
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
     volumes:
       - openclaw_home:/home/node/.openclaw
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       config-init:
         condition: service_completed_successfully

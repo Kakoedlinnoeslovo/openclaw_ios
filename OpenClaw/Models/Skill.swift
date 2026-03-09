@@ -13,6 +13,11 @@ struct Skill: Codable, Identifiable {
     let isCurated: Bool
     let requiresPro: Bool
     let permissions: [String]
+    var isInstalled: Bool?
+    let slug: String?
+    let source: String?
+
+    var isClawHub: Bool { source == "clawhub" }
 }
 
 enum SkillCategory: String, Codable, CaseIterable, Identifiable {
@@ -43,4 +48,9 @@ struct SkillCatalogResponse: Codable {
     let skills: [Skill]
     let categories: [SkillCategory]
     let totalCount: Int
+}
+
+struct RecommendedSkillsResponse: Codable {
+    let skills: [Skill]
+    let persona: String
 }

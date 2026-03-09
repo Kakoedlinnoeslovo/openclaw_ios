@@ -16,12 +16,38 @@
   },
   "agents": {
     "defaults": {
-      "model": "openai/gpt-4o-mini",
+      "model": "openai/gpt-5.2",
       "sandbox": {
         "mode": "off"
-      }
+      },
+      "timeoutSeconds": 600,
+      "contextTokens": 200000
     },
     "list": []
+  },
+  "tools": {
+    "profile": "coding",
+    "web": {
+      "search": {
+        "enabled": true,
+        "maxResults": 5,
+        "timeoutSeconds": 30,
+        "cacheTtlMinutes": 15
+      },
+      "fetch": {
+        "enabled": true,
+        "maxChars": 50000,
+        "timeoutSeconds": 30,
+        "cacheTtlMinutes": 15
+      }
+    },
+    "exec": {
+      "backgroundMs": 10000,
+      "timeoutSec": 300
+    }
+  },
+  "browser": {
+    "enabled": true
   },
   "skills": {
     "allowBundled": ["*"]

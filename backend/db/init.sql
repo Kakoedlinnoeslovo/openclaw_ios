@@ -47,11 +47,15 @@ CREATE TABLE agent_skills (
     name VARCHAR(100) NOT NULL,
     icon VARCHAR(50) NOT NULL DEFAULT 'puzzlepiece.fill',
     version VARCHAR(20) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    source VARCHAR(20) NOT NULL DEFAULT 'curated',
+    config JSONB DEFAULT '{}',
     installed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(agent_id, skill_id)
 );
 
 CREATE INDEX idx_agent_skills_agent ON agent_skills(agent_id);
+CREATE INDEX idx_agent_skills_skill ON agent_skills(skill_id);
 
 -- Tasks
 CREATE TABLE tasks (
@@ -111,3 +115,29 @@ CREATE TABLE refresh_tokens (
 );
 
 CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens(token_hash);
+
+-- Migration helper: add new columns to existing databases.
+-- These are idempotent (DO NOTHING on conflict).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'agent_skills' AND column_name = 'enabled'
+    ) THEN
+        ALTER TABLE agent_skills ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT true;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'agent_skills' AND column_name = 'source'
+    ) THEN
+        ALTER TABLE agent_skills ADD COLUMN source VARCHAR(20) NOT NULL DEFAULT 'curated';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'agent_skills' AND column_name = 'config'
+    ) THEN
+        ALTER TABLE agent_skills ADD COLUMN config JSONB DEFAULT '{}';
+    END IF;
+END $$;

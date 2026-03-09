@@ -8,7 +8,13 @@ const { Queue } = require('bullmq');
 const Redis = require('ioredis');
 
 const { healthCheck: ocHealthCheck } = require('./openclaw-client');
-const { ensureBaseConfig, provisionAgent, deprovisionAgent, installStarterSkills, openclawAgentId } = require('./provisioner');
+const {
+  ensureBaseConfig, provisionAgent, deprovisionAgent,
+  installSkill, uninstallSkill, installStarterSkills,
+  setSkillEnabled, getSkillConfig, setSkillConfig,
+  installClawHubSkill, setSkillCredentials, extractInstallCommands,
+  openclawAgentId, PERSONA_RECOMMENDATIONS,
+} = require('./provisioner');
 const { createWSRelay } = require('./ws-relay');
 
 // Swift's .iso8601 decoder rejects fractional seconds — strip them.
@@ -27,7 +33,6 @@ const taskQueue = new Queue(TASK_QUEUE, {
   connection: new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: null }),
 });
 
-// Write base OpenClaw config on first boot
 ensureBaseConfig();
 
 // ──────────────────────────────────────────────
@@ -67,7 +72,8 @@ async function agentWithSkills(agentId) {
   if (!agent) return null;
 
   const { rows: skills } = await pool.query(
-    'SELECT id, skill_id, name, icon, installed_at FROM agent_skills WHERE agent_id = $1 ORDER BY installed_at',
+    `SELECT id, skill_id, name, icon, version, enabled, source, config, installed_at
+     FROM agent_skills WHERE agent_id = $1 ORDER BY installed_at`,
     [agentId],
   );
 
@@ -76,7 +82,17 @@ async function agentWithSkills(agentId) {
     name: agent.name,
     persona: agent.persona,
     model: agent.model,
-    skills,
+    skills: skills.map(s => ({
+      id: s.id,
+      skill_id: s.skill_id,
+      name: s.name,
+      icon: s.icon,
+      version: s.version,
+      is_enabled: s.enabled,
+      source: s.source,
+      config: s.config || {},
+      installed_at: s.installed_at,
+    })),
     is_active: agent.is_active,
     openclaw_agent_id: agent.openclaw_agent_id,
     created_at: agent.created_at,
@@ -85,9 +101,9 @@ async function agentWithSkills(agentId) {
 
 // Tier-based limits
 const TIER_LIMITS = {
-  free:  { agents: 1,  dailyTasks: 10,  skills: 5,   tokens: 50_000  },
-  pro:   { agents: 5,  dailyTasks: 100, skills: 50,  tokens: 500_000 },
-  team:  { agents: 20, dailyTasks: -1,  skills: -1,  tokens: -1      },
+  free:  { agents: -1, dailyTasks: -1, skills: -1, tokens: -1 },
+  pro:   { agents: -1, dailyTasks: -1, skills: -1, tokens: -1 },
+  team:  { agents: -1, dailyTasks: -1, skills: -1, tokens: -1 },
 };
 
 async function getUserTier(userId) {
@@ -111,6 +127,19 @@ function authenticate(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
   }
+}
+
+// Verify the agent belongs to the authenticated user
+async function verifyAgentOwnership(req, res, next) {
+  const agentId = req.params.agentId || req.params.id;
+  if (!agentId) return res.status(400).json({ error: 'Missing agent ID' });
+
+  const { rows } = await pool.query(
+    'SELECT id FROM agents WHERE id = $1 AND user_id = $2',
+    [agentId, req.userId],
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Agent not found' });
+  next();
 }
 
 // ──────────────────────────────────────────────
@@ -237,7 +266,6 @@ app.post('/agents', authenticate, async (req, res) => {
     const tier = await getUserTier(req.userId);
     const limits = TIER_LIMITS[tier];
 
-    // Enforce agent limit
     const { rows: existing } = await pool.query(
       'SELECT COUNT(*)::int AS cnt FROM agents WHERE user_id = $1',
       [req.userId],
@@ -248,35 +276,32 @@ app.post('/agents', authenticate, async (req, res) => {
 
     const { name, persona, model } = req.body;
 
-    // 1) Insert into our DB
     const { rows } = await pool.query(
       `INSERT INTO agents (user_id, name, persona, model)
        VALUES ($1, $2, $3, $4) RETURNING *`,
-      [req.userId, name, persona || 'Professional', model || 'gpt-4o-mini'],
+      [req.userId, name, persona || 'Professional', model || 'gpt-5.2'],
     );
     const dbAgent = rows[0];
 
-    // 2) Provision in OpenClaw (workspace + config entry)
     const { openclawAgentId: ocId, workspacePath } = provisionAgent({
       userId: req.userId,
       agentId: dbAgent.id,
       name,
       persona: persona || 'Professional',
-      model: model || 'gpt-4o-mini',
+      model: model || 'gpt-5.2',
     });
 
-    // 3) Store the OpenClaw agent ID back in our DB
     await pool.query(
       'UPDATE agents SET openclaw_agent_id = $1, workspace_path = $2 WHERE id = $3',
       [ocId, workspacePath, dbAgent.id],
     );
 
-    // 4) Install starter skills
+    // Install starter skills (filesystem + DB)
     installStarterSkills(req.userId, dbAgent.id);
     for (const skill of CURATED_SKILLS.filter((s) => !s.requires_pro)) {
       await pool.query(
-        `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version)
-         VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+        `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version, enabled, source)
+         VALUES ($1, $2, $3, $4, $5, true, 'curated') ON CONFLICT DO NOTHING`,
         [dbAgent.id, skill.id, skill.name, skill.icon, skill.version],
       );
     }
@@ -338,14 +363,42 @@ app.delete('/agents/:id', authenticate, async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// Agent skills
+// Agent skills (with ownership + limit checks)
 // ──────────────────────────────────────────────
 
-app.post('/agents/:agentId/skills', authenticate, async (req, res) => {
+// List skills for an agent
+app.get('/agents/:agentId/skills', authenticate, verifyAgentOwnership, async (req, res) => {
+  try {
+    const { rows: skills } = await pool.query(
+      `SELECT id, skill_id, name, icon, version, enabled, source, config, installed_at
+       FROM agent_skills WHERE agent_id = $1 ORDER BY installed_at`,
+      [req.params.agentId],
+    );
+    res.json({
+      skills: skills.map(s => ({
+        id: s.id,
+        skill_id: s.skill_id,
+        name: s.name,
+        icon: s.icon,
+        version: s.version,
+        is_enabled: s.enabled,
+        source: s.source,
+        config: s.config || {},
+        installed_at: s.installed_at,
+      })),
+    });
+  } catch (err) {
+    console.error('list agent skills:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Install a curated skill
+app.post('/agents/:agentId/skills', authenticate, verifyAgentOwnership, async (req, res) => {
   try {
     const { skill_id } = req.body;
     const skill = CURATED_SKILLS.find((s) => s.id === skill_id);
-    if (!skill) return res.status(404).json({ error: 'Skill not found' });
+    if (!skill) return res.status(404).json({ error: 'Skill not found in catalog' });
 
     // Check tier for pro-only skills
     if (skill.requires_pro) {
@@ -355,9 +408,27 @@ app.post('/agents/:agentId/skills', authenticate, async (req, res) => {
       }
     }
 
+    // Enforce skill count limit
+    const tier = await getUserTier(req.userId);
+    const limits = TIER_LIMITS[tier];
+    if (limits.skills > 0) {
+      const { rows: [{ cnt }] } = await pool.query(
+        'SELECT COUNT(*)::int AS cnt FROM agent_skills WHERE agent_id = $1',
+        [req.params.agentId],
+      );
+      if (cnt >= limits.skills) {
+        return res.status(403).json({
+          error: `Skill limit reached (${limits.skills}). Upgrade to install more.`,
+        });
+      }
+    }
+
+    // Write SKILL.md into the agent's workspace
+    installSkill(req.userId, req.params.agentId, skill_id);
+
     await pool.query(
-      `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version)
-       VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+      `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version, enabled, source)
+       VALUES ($1, $2, $3, $4, $5, true, 'curated') ON CONFLICT DO NOTHING`,
       [req.params.agentId, skill_id, skill.name, skill.icon, skill.version],
     );
     const agent = await agentWithSkills(req.params.agentId);
@@ -368,8 +439,217 @@ app.post('/agents/:agentId/skills', authenticate, async (req, res) => {
   }
 });
 
-app.delete('/agents/:agentId/skills/:skillId', authenticate, async (req, res) => {
+// Install a ClawHub community skill
+app.post('/agents/:agentId/skills/clawhub', authenticate, verifyAgentOwnership, async (req, res) => {
   try {
+    const { slug } = req.body;
+    if (!slug) return res.status(400).json({ error: 'Missing skill slug' });
+
+    // Enforce skill count limit
+    const tier = await getUserTier(req.userId);
+    const limits = TIER_LIMITS[tier];
+    if (limits.skills > 0) {
+      const { rows: [{ cnt }] } = await pool.query(
+        'SELECT COUNT(*)::int AS cnt FROM agent_skills WHERE agent_id = $1',
+        [req.params.agentId],
+      );
+      if (cnt >= limits.skills) {
+        return res.status(403).json({
+          error: `Skill limit reached (${limits.skills}). Upgrade to install more.`,
+        });
+      }
+    }
+
+    // Download + provision the ClawHub skill via CLI
+    const result = installClawHubSkill(req.userId, req.params.agentId, slug);
+
+    await pool.query(
+      `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version, enabled, source)
+       VALUES ($1, $2, $3, $4, $5, true, $6) ON CONFLICT DO NOTHING`,
+      [req.params.agentId, result.skillId, result.name, result.icon, result.version, result.source],
+    );
+
+    // Auto-install CLI dependencies if the skill needs them
+    let setupTaskId = null;
+    if (result.install_commands?.length) {
+      const { rows: [agentRow] } = await pool.query(
+        'SELECT openclaw_agent_id FROM agents WHERE id = $1',
+        [req.params.agentId],
+      );
+      const ocAgentId = agentRow?.openclaw_agent_id
+        || openclawAgentId(req.userId, req.params.agentId);
+
+      const cmds = result.install_commands.map(c => `- \`${c}\``).join('\n');
+      const setupInput = [
+        `[SYSTEM] A new skill "${result.name}" was just installed.`,
+        `Install its required CLI dependencies by running these commands:`,
+        cmds,
+        ``,
+        `Run each command using exec. Do NOT ask for confirmation.`,
+        `If brew is not available, try the npm equivalent.`,
+        `After installing, verify the tool works by running it with --help or --version.`,
+        `Reply with a short summary of what was installed and whether it succeeded.`,
+      ].join('\n');
+
+      const { rows: [setupTask] } = await pool.query(
+        `INSERT INTO tasks (agent_id, user_id, input, status)
+         VALUES ($1, $2, $3, 'queued') RETURNING id`,
+        [req.params.agentId, req.userId, setupInput],
+      );
+      setupTaskId = setupTask.id;
+
+      await taskQueue.add('run', {
+        taskId: setupTaskId,
+        agentId: req.params.agentId,
+        openclawAgentId: ocAgentId,
+        userId: req.userId,
+        input: setupInput,
+      });
+
+      console.log(`[setup] queued dependency install for ${slug} → task ${setupTaskId}`);
+    }
+
+    const agent = await agentWithSkills(req.params.agentId);
+
+    res.json({
+      ...agent,
+      setup_required: result.setup_required || false,
+      setup_requirements: result.setup_requirements || [],
+      setup_task_id: setupTaskId,
+    });
+  } catch (err) {
+    console.error('install clawhub skill:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Enable/disable a skill or update its config
+app.patch('/agents/:agentId/skills/:skillId', authenticate, verifyAgentOwnership, async (req, res) => {
+  try {
+    const { enabled, config } = req.body;
+
+    // Verify skill belongs to this agent
+    const { rows: [existing] } = await pool.query(
+      'SELECT id, skill_id FROM agent_skills WHERE agent_id = $1 AND skill_id = $2',
+      [req.params.agentId, req.params.skillId],
+    );
+    if (!existing) return res.status(404).json({ error: 'Skill not installed on this agent' });
+
+    if (enabled !== undefined) {
+      await pool.query(
+        'UPDATE agent_skills SET enabled = $1 WHERE agent_id = $2 AND skill_id = $3',
+        [enabled, req.params.agentId, req.params.skillId],
+      );
+      setSkillEnabled(req.userId, req.params.agentId, req.params.skillId, enabled);
+    }
+
+    if (config !== undefined) {
+      await pool.query(
+        'UPDATE agent_skills SET config = $1 WHERE agent_id = $2 AND skill_id = $3',
+        [JSON.stringify(config), req.params.agentId, req.params.skillId],
+      );
+      setSkillConfig(req.userId, req.params.agentId, req.params.skillId, config);
+    }
+
+    const agent = await agentWithSkills(req.params.agentId);
+    res.json(agent);
+  } catch (err) {
+    console.error('update skill:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Set credentials for a skill that requires external service configuration
+app.post('/agents/:agentId/skills/:skillId/credentials', authenticate, verifyAgentOwnership, async (req, res) => {
+  try {
+    const { credentials } = req.body;
+    if (!credentials || typeof credentials !== 'object') {
+      return res.status(400).json({ error: 'Missing credentials object' });
+    }
+
+    const { rows: [existing] } = await pool.query(
+      'SELECT id FROM agent_skills WHERE agent_id = $1 AND skill_id = $2',
+      [req.params.agentId, req.params.skillId],
+    );
+    if (!existing) return res.status(404).json({ error: 'Skill not installed on this agent' });
+
+    // Inject credentials into the agent's OpenClaw environment
+    setSkillCredentials(req.userId, req.params.agentId, req.params.skillId, credentials);
+
+    // Mark skill as configured in DB
+    await pool.query(
+      `UPDATE agent_skills SET config = config || $1 WHERE agent_id = $2 AND skill_id = $3`,
+      [JSON.stringify({ _configured: true }), req.params.agentId, req.params.skillId],
+    );
+
+    res.json({ status: 'configured' });
+  } catch (err) {
+    console.error('set skill credentials:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Manually trigger dependency setup for an already-installed skill
+app.post('/agents/:agentId/skills/:skillId/setup', authenticate, verifyAgentOwnership, async (req, res) => {
+  try {
+    const { rows: [existing] } = await pool.query(
+      'SELECT id, skill_id FROM agent_skills WHERE agent_id = $1 AND skill_id = $2',
+      [req.params.agentId, req.params.skillId],
+    );
+    if (!existing) return res.status(404).json({ error: 'Skill not installed on this agent' });
+
+    const OC_HOME = process.env.OPENCLAW_HOME || '/openclaw-home';
+    const ocId = openclawAgentId(req.userId, req.params.agentId);
+    const skillDir = require('path').join(OC_HOME, 'workspaces', ocId, 'skills', req.params.skillId);
+
+    const commands = extractInstallCommands(skillDir);
+    if (!commands.length) {
+      return res.json({ status: 'no_setup_needed', message: 'No install commands found in SKILL.md' });
+    }
+
+    const { rows: [agentRow] } = await pool.query(
+      'SELECT openclaw_agent_id FROM agents WHERE id = $1',
+      [req.params.agentId],
+    );
+    const ocAgentId = agentRow?.openclaw_agent_id || ocId;
+
+    const cmds = commands.map(c => `- \`${c}\``).join('\n');
+    const setupInput = [
+      `[SYSTEM] Install dependencies for skill "${req.params.skillId}":`,
+      cmds,
+      ``,
+      `Run each command using exec. Do NOT ask for confirmation.`,
+      `If brew is not available, try the npm equivalent.`,
+      `After installing, verify the tool works with --help or --version.`,
+      `Reply with a short summary of what was installed.`,
+    ].join('\n');
+
+    const { rows: [task] } = await pool.query(
+      `INSERT INTO tasks (agent_id, user_id, input, status)
+       VALUES ($1, $2, $3, 'queued') RETURNING id`,
+      [req.params.agentId, req.userId, setupInput],
+    );
+
+    await taskQueue.add('run', {
+      taskId: task.id,
+      agentId: req.params.agentId,
+      openclawAgentId: ocAgentId,
+      userId: req.userId,
+      input: setupInput,
+    });
+
+    res.json({ status: 'setup_queued', setup_task_id: task.id, install_commands: commands });
+  } catch (err) {
+    console.error('skill setup:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Uninstall a skill
+app.delete('/agents/:agentId/skills/:skillId', authenticate, verifyAgentOwnership, async (req, res) => {
+  try {
+    uninstallSkill(req.userId, req.params.agentId, req.params.skillId);
+
     await pool.query(
       'DELETE FROM agent_skills WHERE agent_id = $1 AND skill_id = $2',
       [req.params.agentId, req.params.skillId],
@@ -404,7 +684,6 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
     const { input } = req.body;
     if (!input) return res.status(400).json({ error: 'Missing input' });
 
-    // Rate limiting by tier
     const tier = await getUserTier(req.userId);
     const limits = TIER_LIMITS[tier];
     if (limits.dailyTasks > 0) {
@@ -418,7 +697,6 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
       }
     }
 
-    // Resolve OpenClaw agent ID
     const { rows: [agent] } = await pool.query(
       'SELECT openclaw_agent_id FROM agents WHERE id = $1 AND user_id = $2',
       [req.params.agentId, req.userId],
@@ -427,7 +705,6 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
 
     const ocAgentId = agent.openclaw_agent_id || openclawAgentId(req.userId, req.params.agentId);
 
-    // Insert task row
     const { rows } = await pool.query(
       `INSERT INTO tasks (agent_id, user_id, input, status)
        VALUES ($1, $2, $3, 'queued') RETURNING id, status`,
@@ -435,7 +712,6 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
     );
     const taskId = rows[0].id;
 
-    // Enqueue for the BullMQ worker
     await taskQueue.add('run', {
       taskId,
       agentId: req.params.agentId,
@@ -447,6 +723,25 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
     res.status(201).json({ task_id: taskId, status: 'queued' });
   } catch (err) {
     console.error('submit task:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.delete('/agents/:agentId/tasks', authenticate, async (req, res) => {
+  try {
+    const { rows: [agent] } = await pool.query(
+      'SELECT id FROM agents WHERE id = $1 AND user_id = $2',
+      [req.params.agentId, req.userId],
+    );
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+    const { rowCount } = await pool.query(
+      "DELETE FROM tasks WHERE agent_id = $1 AND user_id = $2 AND status NOT IN ('queued', 'running')",
+      [req.params.agentId, req.userId],
+    );
+    res.json({ deleted: rowCount });
+  } catch (err) {
+    console.error('clear tasks:', err);
     res.status(500).json({ error: 'Internal error' });
   }
 });
@@ -524,7 +819,7 @@ const CURATED_SKILLS = [
     stars: 2100,
     version: '1.0.3',
     is_curated: true,
-    requires_pro: true,
+    requires_pro: false,
     permissions: ['files'],
   },
   {
@@ -566,7 +861,7 @@ const CURATED_SKILLS = [
     stars: 1200,
     version: '0.9.0',
     is_curated: true,
-    requires_pro: true,
+    requires_pro: false,
     permissions: ['internet', 'files'],
   },
   {
@@ -608,7 +903,7 @@ const CURATED_SKILLS = [
     stars: 1600,
     version: '1.0.0',
     is_curated: false,
-    requires_pro: true,
+    requires_pro: false,
     permissions: ['calendar'],
   },
 ];
@@ -618,19 +913,253 @@ const SKILL_CATEGORIES = [
   'Communication', 'Automation', 'Development',
 ];
 
-app.get('/skills/catalog', authenticate, (req, res) => {
-  let filtered = CURATED_SKILLS;
-  const { category, q } = req.query;
+// ClawHub community skills – browsable natively from the iOS app
+const CLAWHUB_SKILLS = [
+  {
+    slug: 'openinterpreter/open-interpreter',
+    name: 'Open Interpreter',
+    description: 'Run code locally in Python, JavaScript, and Shell. Execute tasks on your machine through natural language.',
+    icon: 'terminal.fill',
+    author: 'Open Interpreter',
+    category: 'Development',
+    downloads: 32400,
+    stars: 51000,
+    version: '0.3.7',
+  },
+  {
+    slug: 'crewai/crewai-tools',
+    name: 'CrewAI Tools',
+    description: 'A toolkit of pre-built tools for web scraping, file operations, and API integrations.',
+    icon: 'wrench.and.screwdriver.fill',
+    author: 'CrewAI',
+    category: 'Automation',
+    downloads: 18200,
+    stars: 19500,
+    version: '0.9.0',
+  },
+  {
+    slug: 'community/arxiv-researcher',
+    name: 'arXiv Researcher',
+    description: 'Search and summarize academic papers from arXiv. Find relevant research by topic or keyword.',
+    icon: 'book.pages.fill',
+    author: 'Community',
+    category: 'Research',
+    downloads: 8700,
+    stars: 3200,
+    version: '1.1.0',
+  },
+  {
+    slug: 'community/github-issues',
+    name: 'GitHub Issues',
+    description: 'Create, search, and manage GitHub issues. Triage bugs and track feature requests.',
+    icon: 'ladybug.fill',
+    author: 'Community',
+    category: 'Development',
+    downloads: 12300,
+    stars: 4100,
+    version: '1.2.0',
+  },
+  {
+    slug: 'community/notion-sync',
+    name: 'Notion Sync',
+    description: 'Read and write Notion pages and databases. Keep your knowledge base up to date.',
+    icon: 'doc.on.doc.fill',
+    author: 'Community',
+    category: 'Productivity',
+    downloads: 9800,
+    stars: 2900,
+    version: '1.0.3',
+  },
+  {
+    slug: 'community/slack-assistant',
+    name: 'Slack Assistant',
+    description: 'Send messages, summarize channels, and respond to threads in Slack workspaces.',
+    icon: 'bubble.left.and.bubble.right.fill',
+    author: 'Community',
+    category: 'Communication',
+    downloads: 14500,
+    stars: 5200,
+    version: '1.3.0',
+  },
+  {
+    slug: 'community/pdf-reader',
+    name: 'PDF Reader',
+    description: 'Extract text, tables, and images from PDF documents for analysis and summarization.',
+    icon: 'doc.text.fill',
+    author: 'Community',
+    category: 'Data',
+    downloads: 11200,
+    stars: 3800,
+    version: '1.0.1',
+  },
+  {
+    slug: 'community/social-poster',
+    name: 'Social Media Poster',
+    description: 'Draft and schedule posts for Twitter/X, LinkedIn, and Mastodon with AI-generated captions.',
+    icon: 'megaphone.fill',
+    author: 'Community',
+    category: 'Communication',
+    downloads: 7600,
+    stars: 2100,
+    version: '0.8.0',
+  },
+  {
+    slug: 'community/sql-assistant',
+    name: 'SQL Assistant',
+    description: 'Generate, explain, and optimize SQL queries. Connect to PostgreSQL, MySQL, and SQLite.',
+    icon: 'cylinder.split.1x2.fill',
+    author: 'Community',
+    category: 'Data',
+    downloads: 10400,
+    stars: 3600,
+    version: '1.1.0',
+  },
+  {
+    slug: 'community/markdown-writer',
+    name: 'Markdown Writer',
+    description: 'Create polished Markdown documents, READMEs, and documentation with formatting helpers.',
+    icon: 'text.document.fill',
+    author: 'Community',
+    category: 'Writing',
+    downloads: 6200,
+    stars: 1800,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/image-gen',
+    name: 'Image Generator',
+    description: 'Generate images from text prompts using Stable Diffusion and DALL-E APIs.',
+    icon: 'photo.artframe',
+    author: 'Community',
+    category: 'Automation',
+    downloads: 15800,
+    stars: 6400,
+    version: '1.2.0',
+  },
+  {
+    slug: 'community/unit-test-writer',
+    name: 'Unit Test Writer',
+    description: 'Automatically generate unit tests for Python, JavaScript, and TypeScript code.',
+    icon: 'checkmark.diamond.fill',
+    author: 'Community',
+    category: 'Development',
+    downloads: 8900,
+    stars: 3100,
+    version: '1.0.2',
+  },
+];
 
-  if (category) filtered = filtered.filter((s) => s.category === category);
-  if (q) {
-    const lower = q.toLowerCase();
-    filtered = filtered.filter(
-      (s) => s.name.toLowerCase().includes(lower) || s.description.toLowerCase().includes(lower),
-    );
+app.get('/skills/clawhub/browse', authenticate, async (req, res) => {
+  try {
+    const { category, q, agent_id } = req.query;
+    let filtered = CLAWHUB_SKILLS;
+
+    if (category) filtered = filtered.filter(s => s.category === category);
+    if (q) {
+      const lower = q.toLowerCase();
+      filtered = filtered.filter(
+        s => s.name.toLowerCase().includes(lower) || s.description.toLowerCase().includes(lower),
+      );
+    }
+
+    let installedSlugs = new Set();
+    if (agent_id) {
+      const { rows } = await pool.query(
+        "SELECT skill_id FROM agent_skills WHERE agent_id = $1 AND source = 'clawhub'",
+        [agent_id],
+      );
+      installedSlugs = new Set(rows.map(r => r.skill_id));
+    }
+
+    const skills = filtered.map(s => ({
+      id: s.slug,
+      slug: s.slug,
+      ...s,
+      is_curated: false,
+      requires_pro: false,
+      permissions: [],
+      source: 'clawhub',
+      is_installed: agent_id ? installedSlugs.has(s.slug.split('/').pop()) : undefined,
+    }));
+
+    res.json({ skills, total_count: skills.length });
+  } catch (err) {
+    console.error('clawhub browse:', err);
+    res.status(500).json({ error: 'Internal error' });
   }
+});
 
-  res.json({ skills: filtered, categories: SKILL_CATEGORIES, total_count: filtered.length });
+// Catalog with optional installed-status per agent
+app.get('/skills/catalog', authenticate, async (req, res) => {
+  try {
+    let filtered = CURATED_SKILLS;
+    const { category, q, agent_id } = req.query;
+
+    if (category) filtered = filtered.filter((s) => s.category === category);
+    if (q) {
+      const lower = q.toLowerCase();
+      filtered = filtered.filter(
+        (s) => s.name.toLowerCase().includes(lower) || s.description.toLowerCase().includes(lower),
+      );
+    }
+
+    // If an agent_id is provided, annotate each skill with installed status
+    let installedIds = new Set();
+    if (agent_id) {
+      const { rows } = await pool.query(
+        'SELECT skill_id FROM agent_skills WHERE agent_id = $1',
+        [agent_id],
+      );
+      installedIds = new Set(rows.map(r => r.skill_id));
+    }
+
+    const skills = filtered.map(s => ({
+      ...s,
+      is_installed: agent_id ? installedIds.has(s.id) : undefined,
+    }));
+
+    res.json({ skills, categories: SKILL_CATEGORIES, total_count: skills.length });
+  } catch (err) {
+    console.error('skills catalog:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Recommended skills based on agent persona (must be before :id route)
+app.get('/skills/recommended', authenticate, async (req, res) => {
+  try {
+    const { agent_id } = req.query;
+    let persona = 'Professional';
+
+    if (agent_id) {
+      const { rows: [agent] } = await pool.query(
+        'SELECT persona FROM agents WHERE id = $1 AND user_id = $2',
+        [agent_id, req.userId],
+      );
+      if (agent) persona = agent.persona;
+    }
+
+    const recommendedIds = PERSONA_RECOMMENDATIONS[persona] || PERSONA_RECOMMENDATIONS.Professional;
+
+    let installedIds = new Set();
+    if (agent_id) {
+      const { rows } = await pool.query(
+        'SELECT skill_id FROM agent_skills WHERE agent_id = $1',
+        [agent_id],
+      );
+      installedIds = new Set(rows.map(r => r.skill_id));
+    }
+
+    const recommended = recommendedIds
+      .filter(id => !installedIds.has(id))
+      .map(id => CURATED_SKILLS.find(s => s.id === id))
+      .filter(Boolean);
+
+    res.json({ skills: recommended, persona });
+  } catch (err) {
+    console.error('recommended skills:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
 });
 
 app.get('/skills/:id', authenticate, (req, res) => {
@@ -665,7 +1194,6 @@ app.post('/subscription/verify', authenticate, async (req, res) => {
   try {
     const { receipt_data, product_id } = req.body;
     // TODO: Verify receipt with Apple's App Store Server API.
-    // For now, just record it.
     await pool.query(
       `INSERT INTO subscriptions (user_id, product_id, tier, is_active, expires_at)
        VALUES ($1, $2, 'pro', true, NOW() + INTERVAL '30 days')
