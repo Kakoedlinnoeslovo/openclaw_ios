@@ -14,7 +14,7 @@
                            │
                            ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                     API Gateway (Fastify)                        │
+│                     API Gateway (Express)                        │
 │  ┌──────────┐ ┌────────────┐ ┌───────────┐ ┌────────────────┐  │
 │  │ Auth/JWT │ │ Rate Limit │ │ Billing   │ │ Usage Metering │  │
 │  └────┬─────┘ └─────┬──────┘ └─────┬─────┘ └───────┬────────┘  │
@@ -55,7 +55,7 @@
 - Caddy reverse proxy with automatic TLS
 - PostgreSQL 16 + Redis 7 in containers
 - OpenClaw Gateway in container
-- API Gateway (Fastify) in container
+- API Gateway (Express) in container
 - Cost: ~$40–80/month
 
 **V2 (Month 4+)**
@@ -69,12 +69,14 @@
 
 ```
 docker-compose.yml
-├── caddy          (reverse proxy, TLS termination)
-├── api-gateway    (Fastify app, port 3000)
-├── openclaw       (OpenClaw Gateway, port 18789)
-├── postgres       (database, port 5432)
-├── redis          (cache/queue, port 6379)
-└── worker         (BullMQ job processor)
+├── caddy              (reverse proxy, TLS termination)
+├── config-init        (one-shot: seeds openclaw.json)
+├── onboard            (one-shot: runs openclaw onboard)
+├── api-gateway        (Express app, port 3000)
+├── worker             (BullMQ job processor)
+├── openclaw-gateway   (OpenClaw engine, port 18789)
+├── postgres           (database, port 5432)
+└── redis              (cache/queue, port 6379)
 ```
 
 ---
@@ -133,35 +135,7 @@ Install to user's agent workspace → Update agent config
 
 ## 5. API Communication
 
-### REST Endpoints (API Gateway → iOS App)
-
-| Method | Path                        | Purpose                    |
-|--------|-----------------------------|----------------------------|
-| POST   | `/auth/register`            | Create account             |
-| POST   | `/auth/login`               | Get JWT tokens             |
-| POST   | `/auth/refresh`             | Refresh access token       |
-| GET    | `/agents`                   | List user's agents         |
-| POST   | `/agents`                   | Create new agent           |
-| PATCH  | `/agents/:id`               | Update agent config        |
-| DELETE | `/agents/:id`               | Delete agent               |
-| GET    | `/skills/catalog`           | Browse available skills    |
-| POST   | `/agents/:id/skills`        | Install skill to agent     |
-| DELETE | `/agents/:id/skills/:skillId` | Remove skill             |
-| POST   | `/agents/:id/tasks`         | Submit task                |
-| GET    | `/agents/:id/tasks`         | List task history          |
-| GET    | `/agents/:id/tasks/:taskId` | Get task result            |
-| GET    | `/subscription`             | Get current plan           |
-| POST   | `/subscription/verify`      | Verify App Store receipt   |
-| GET    | `/usage`                    | Get usage stats            |
-
-### WebSocket (Real-time task streaming)
-
-| Event             | Direction       | Purpose                  |
-|-------------------|-----------------|--------------------------|
-| `task:progress`   | Server → Client | Streaming task output    |
-| `task:complete`   | Server → Client | Task finished            |
-| `task:error`      | Server → Client | Task failed              |
-| `agent:status`    | Server → Client | Agent online/offline     |
+The API Gateway exposes REST endpoints for auth, agents, skills, tasks, subscriptions, and usage, plus a WebSocket path for real-time task streaming. See [backend/README.md](backend/README.md) for the full API reference with curl examples.
 
 ---
 
@@ -251,22 +225,7 @@ Install to user's agent workspace → Update agent config
 
 ## 9. Technical Stack
 
-| Layer              | Technology                    | Rationale                              |
-|--------------------|-------------------------------|----------------------------------------|
-| iOS App            | SwiftUI + Swift 6             | Native, modern, Xcode-buildable        |
-| Networking         | URLSession + async/await      | No dependencies needed                 |
-| Local Storage      | SwiftData                     | Apple-native persistence               |
-| Subscriptions      | StoreKit 2                    | Required for App Store compliance      |
-| Backend API        | Fastify (Node.js 22)          | Fast, TypeScript, same ecosystem as OC |
-| Database           | PostgreSQL 16                 | RLS, JSONB for agent configs           |
-| Cache/Queue        | Redis 7 + BullMQ              | Job queue, rate limiting, sessions     |
-| Agent Runtime      | OpenClaw (self-hosted)        | Core AI engine                         |
-| Reverse Proxy      | Caddy                         | Auto TLS, simple config                |
-| Containers         | Docker + Docker Compose       | Simple, no K8s overhead for MVP        |
-| Monitoring         | Prometheus + Grafana           | Open source, lightweight              |
-| Logging            | Pino (structured JSON)        | Native to Fastify ecosystem            |
-| Error Tracking     | Sentry                        | iOS + backend in one platform          |
-| Infrastructure     | Hetzner Cloud                 | Best price/performance for EU startup  |
+See [README.md](README.md) for the current tech stack summary.
 
 ---
 

@@ -164,7 +164,7 @@ curl -X POST http://localhost/agents \
 
 Available personas: `Professional`, `Friendly`, `Technical`, `Creative`
 
-Available models: `gpt-5.2` (default), `gpt-5.4`, `gpt-5-mini`, `gpt-4o`, `gpt-4o-mini`, `claude-sonnet`
+Available models: `gpt-5.2` (default), `gpt-5-mini`, `gpt-4o`, `gpt-4o-mini`, `claude-sonnet`
 
 ### Tasks
 
@@ -248,20 +248,21 @@ ws://localhost:3000/ws/agents/:agentId?token=<jwt>
 
 ## Testing from CLI
 
-A test script is included for real-time streaming from the terminal:
+Test scripts live in `scripts/`:
 
 ```bash
-# Auto-picks first agent, default prompt
-node test-realtime.js
+# Real-time WebSocket streaming test
+node scripts/test-realtime.js
 
 # Custom prompt
-node test-realtime.js "" "What's the weather in London?"
+node scripts/test-realtime.js "" "What's the weather in London?"
 
 # Specific agent + prompt
-node test-realtime.js <agent-uuid> "Find 3 Italian restaurants near Canary Wharf"
-```
+node scripts/test-realtime.js <agent-uuid> "Find 3 Italian restaurants near Canary Wharf"
 
-The script logs in as `test@example.com`, connects the WebSocket, submits a task, and streams the response live.
+# Interactive API test CLI (Python, stdlib only)
+python3 scripts/test_api.py
+```
 
 ## Agent Capabilities
 
@@ -329,20 +330,22 @@ docker compose restart worker
 backend/
 ├── api-gateway/
 │   └── src/
-│       ├── index.js          # Express API — auth, agents, skills, tasks
-│       ├── worker.js         # BullMQ task worker — streams OpenClaw completions
-│       ├── provisioner.js    # Agent/skill provisioning into OpenClaw gateway
-│       ├── openclaw-client.js # OpenClaw chat completions client (streaming + sync)
-│       └── ws-relay.js       # WebSocket relay — Redis pub/sub → iOS clients
+│       ├── index.js            # Express API — auth, agents, skills, tasks
+│       ├── worker.js           # BullMQ task worker — streams OpenClaw completions
+│       ├── provisioner.js      # Agent/skill provisioning into OpenClaw gateway
+│       ├── openclaw-client.js  # OpenClaw chat completions client (streaming + sync)
+│       └── ws-relay.js         # WebSocket relay — Redis pub/sub → iOS clients
 ├── db/
-│   └── init.sql              # PostgreSQL schema
-├── openclaw/                 # OpenClaw gateway (git submodule)
+│   └── init.sql                # PostgreSQL schema
+├── openclaw/                   # OpenClaw gateway (git submodule)
 ├── openclaw-config/
-│   └── openclaw.json         # Seed config for the gateway
+│   └── openclaw.json           # Seed config for the gateway
+├── scripts/
+│   ├── test_api.py             # Interactive API test CLI
+│   └── test-realtime.js        # CLI test for real-time WebSocket streaming
 ├── docker-compose.yml
 ├── Caddyfile
 ├── setup.sh
-├── test-realtime.js          # CLI test script for real-time streaming
-└── .env                      # Secrets (not committed)
+└── .env                        # Secrets (not committed)
 ```
 
