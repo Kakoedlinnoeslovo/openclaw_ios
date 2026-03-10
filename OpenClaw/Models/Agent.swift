@@ -52,6 +52,8 @@ enum AgentPersona: String, Codable, CaseIterable, Identifiable {
 enum LLMModel: String, Codable, CaseIterable, Identifiable {
     case gpt4oMini = "gpt-4o-mini"
     case gpt4o = "gpt-4o"
+    case gpt5Mini = "gpt-5-mini"
+    case gpt52 = "gpt-5.2"
     case claude = "claude-sonnet"
 
     var id: String { rawValue }
@@ -60,6 +62,8 @@ enum LLMModel: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .gpt4oMini: return "GPT-4o Mini"
         case .gpt4o: return "GPT-4o"
+        case .gpt5Mini: return "GPT-5 Mini"
+        case .gpt52: return "GPT-5.2"
         case .claude: return "Claude Sonnet"
         }
     }

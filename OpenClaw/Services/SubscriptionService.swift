@@ -9,6 +9,7 @@ final class SubscriptionService {
     var purchasedProductIDs: Set<String> = []
     var currentTier: User.SubscriptionTier = .team
     var usage: UsageStats?
+    var subscriptionInfo: SubscriptionInfo?
     var isLoading = false
 
     private var updateListenerTask: Task<Void, Error>?
@@ -77,6 +78,25 @@ final class SubscriptionService {
 
     func fetchUsage() async throws {
         usage = try await APIClient.shared.get("/usage")
+    }
+
+    func fetchSubscription() async throws {
+        subscriptionInfo = try await APIClient.shared.get("/subscription")
+    }
+
+    func verifyReceipt(receiptData: String, productId: String) async throws {
+        struct VerifyBody: Codable {
+            let receiptData: String
+            let productId: String
+        }
+        struct VerifyResponse: Codable {
+            let status: String
+            let tier: String
+        }
+        let _: VerifyResponse = try await APIClient.shared.post(
+            "/subscription/verify",
+            body: VerifyBody(receiptData: receiptData, productId: productId)
+        )
     }
 
     func restorePurchases() async {

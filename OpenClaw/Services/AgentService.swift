@@ -110,6 +110,23 @@ final class AgentService {
         }
         return updated
     }
+
+    // MARK: - Agent Skills (standalone endpoint)
+
+    func fetchAgentSkills(agentId: String) async throws -> [Agent.InstalledSkill] {
+        struct SkillsResponse: Codable { let skills: [Agent.InstalledSkill] }
+        let response: SkillsResponse = try await APIClient.shared.get("/agents/\(agentId)/skills")
+        if let index = agents.firstIndex(where: { $0.id == agentId }) {
+            agents[index].skills = response.skills
+        }
+        return response.skills
+    }
+
+    // MARK: - Skill Setup (install CLI dependencies)
+
+    func setupSkill(agentId: String, skillId: String) async throws -> SkillSetupResponse {
+        try await APIClient.shared.post("/agents/\(agentId)/skills/\(skillId)/setup")
+    }
 }
 
 // MARK: - Response Types
@@ -118,6 +135,7 @@ struct ClawHubInstallResponse: Codable {
     let agent: Agent
     let setupRequired: Bool?
     let setupRequirements: [SkillSetupRequirement]?
+    let setupTaskId: String?
 
     init(from decoder: Decoder) throws {
         let agentFields = try Agent(from: decoder)
@@ -126,11 +144,13 @@ struct ClawHubInstallResponse: Codable {
         let container = try decoder.container(keyedBy: ExtraKeys.self)
         self.setupRequired = try container.decodeIfPresent(Bool.self, forKey: .setupRequired)
         self.setupRequirements = try container.decodeIfPresent([SkillSetupRequirement].self, forKey: .setupRequirements)
+        self.setupTaskId = try container.decodeIfPresent(String.self, forKey: .setupTaskId)
     }
 
     private enum ExtraKeys: String, CodingKey {
         case setupRequired
         case setupRequirements
+        case setupTaskId
     }
 }
 
@@ -142,6 +162,13 @@ struct SkillSetupRequirement: Codable, Identifiable {
     let sensitive: Bool
 
     var id: String { key }
+}
+
+struct SkillSetupResponse: Codable {
+    let status: String
+    let setupTaskId: String?
+    let installCommands: [String]?
+    let message: String?
 }
 
 private struct EmptyResult: Codable {}

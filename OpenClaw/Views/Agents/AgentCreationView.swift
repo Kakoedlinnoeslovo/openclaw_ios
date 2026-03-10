@@ -4,9 +4,11 @@ struct AgentCreationView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(SubscriptionService.self) private var subscription
 
+    var onCreated: ((Agent) -> Void)?
+
     @State private var name = ""
     @State private var persona: AgentPersona = .professional
-    @State private var model: LLMModel = .gpt4oMini
+    @State private var model: LLMModel = .gpt52
     @State private var isCreating = false
     @State private var errorMessage: String?
     @State private var showPaywall = false
@@ -125,8 +127,11 @@ struct AgentCreationView: View {
         Task {
             do {
                 let request = CreateAgentRequest(name: name, persona: persona, model: model)
-                _ = try await AgentService.shared.createAgent(request)
+                let agent = try await AgentService.shared.createAgent(request)
                 dismiss()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    onCreated?(agent)
+                }
             } catch let error as APIError {
                 errorMessage = error.errorDescription
             } catch {

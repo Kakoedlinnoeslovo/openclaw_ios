@@ -45,6 +45,16 @@
 		A10000010000000000000024 /* QuickAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000024 /* QuickAction.swift */; };
 		A10000010000000000000025 /* QuickActionInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000025 /* QuickActionInputView.swift */; };
 		A10000010000000000000026 /* ClawHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000026 /* ClawHubView.swift */; };
+		A10000010000000000000027 /* NotificationPromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000027 /* NotificationPromptView.swift */; };
+		A10000010000000000000028 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000028 /* HistoryView.swift */; };
+		B10000010000000000000001 /* OpenClawUITestBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* OpenClawUITestBase.swift */; };
+		B10000010000000000000002 /* OnboardingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* OnboardingFlowTests.swift */; };
+		B10000010000000000000003 /* PaywallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* PaywallTests.swift */; };
+		B10000010000000000000004 /* HomeViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* HomeViewTests.swift */; };
+		B10000010000000000000005 /* TabBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000005 /* TabBarTests.swift */; };
+		B10000010000000000000006 /* HistoryViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000006 /* HistoryViewTests.swift */; };
+		B10000010000000000000007 /* TaskChatViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000007 /* TaskChatViewTests.swift */; };
+		B10000010000000000000008 /* SettingsViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000008 /* SettingsViewTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -86,7 +96,18 @@
 		A20000010000000000000024 /* QuickAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickAction.swift; sourceTree = "<group>"; };
 		A20000010000000000000025 /* QuickActionInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActionInputView.swift; sourceTree = "<group>"; };
 		A20000010000000000000026 /* ClawHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClawHubView.swift; sourceTree = "<group>"; };
+		A20000010000000000000027 /* NotificationPromptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPromptView.swift; sourceTree = "<group>"; };
+		A20000010000000000000028 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		A30000010000000000000001 /* OpenClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000010000000000000001 /* OpenClawUITestBase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawUITestBase.swift; sourceTree = "<group>"; };
+		B20000010000000000000002 /* OnboardingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlowTests.swift; sourceTree = "<group>"; };
+		B20000010000000000000003 /* PaywallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallTests.swift; sourceTree = "<group>"; };
+		B20000010000000000000004 /* HomeViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewTests.swift; sourceTree = "<group>"; };
+		B20000010000000000000005 /* TabBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarTests.swift; sourceTree = "<group>"; };
+		B20000010000000000000006 /* HistoryViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryViewTests.swift; sourceTree = "<group>"; };
+		B20000010000000000000007 /* TaskChatViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskChatViewTests.swift; sourceTree = "<group>"; };
+		B20000010000000000000008 /* SettingsViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewTests.swift; sourceTree = "<group>"; };
+		B30000010000000000000001 /* OpenClawUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenClawUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,13 +118,39 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B40000010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXContainerItemProxy section */
+		B90000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000010000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A60000010000000000000001;
+			remoteInfo = OpenClaw;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		BA0000010000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A60000010000000000000001 /* OpenClaw */;
+			targetProxy = B90000010000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXGroup section */
 		A50000010000000000000001 = {
 			isa = PBXGroup;
 			children = (
 				A50000010000000000000002 /* OpenClaw */,
+				B50000010000000000000001 /* OpenClawUITests */,
 				A50000010000000000000099 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -169,6 +216,7 @@
 				A5000001000000000000000D /* Components */,
 				A20000010000000000000019 /* SettingsView.swift */,
 				A20000010000000000000020 /* UsageView.swift */,
+				A20000010000000000000028 /* HistoryView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -191,6 +239,7 @@
 				A20000010000000000000011 /* SignUpView.swift */,
 				A20000010000000000000022 /* StylePreferenceView.swift */,
 				A20000010000000000000023 /* PurposeSelectionView.swift */,
+				A20000010000000000000027 /* NotificationPromptView.swift */,
 			);
 			path = Onboarding;
 			sourceTree = "<group>";
@@ -253,8 +302,24 @@
 			isa = PBXGroup;
 			children = (
 				A30000010000000000000001 /* OpenClaw.app */,
+				B30000010000000000000001 /* OpenClawUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B50000010000000000000001 /* OpenClawUITests */ = {
+			isa = PBXGroup;
+			children = (
+				B20000010000000000000001 /* OpenClawUITestBase.swift */,
+				B20000010000000000000002 /* OnboardingFlowTests.swift */,
+				B20000010000000000000003 /* PaywallTests.swift */,
+				B20000010000000000000004 /* HomeViewTests.swift */,
+				B20000010000000000000005 /* TabBarTests.swift */,
+				B20000010000000000000006 /* HistoryViewTests.swift */,
+				B20000010000000000000007 /* TaskChatViewTests.swift */,
+				B20000010000000000000008 /* SettingsViewTests.swift */,
+			);
+			path = OpenClawUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -277,6 +342,23 @@
 			productReference = A30000010000000000000001 /* OpenClaw.app */;
 			productType = "com.apple.product-type.application";
 		};
+		B60000010000000000000001 /* OpenClawUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B80000010000000000000003 /* Build configuration list for PBXNativeTarget "OpenClawUITests" */;
+			buildPhases = (
+				B70000010000000000000001 /* Sources */,
+				B40000010000000000000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BA0000010000000000000001 /* PBXTargetDependency */,
+			);
+			name = OpenClawUITests;
+			productName = OpenClawUITests;
+			productReference = B30000010000000000000001 /* OpenClawUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -289,6 +371,10 @@
 				TargetAttributes = {
 					A60000010000000000000001 = {
 						CreatedOnToolsVersion = 16.0;
+					};
+					B60000010000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = A60000010000000000000001;
 					};
 				};
 			};
@@ -306,6 +392,7 @@
 			projectRoot = "";
 			targets = (
 				A60000010000000000000001 /* OpenClaw */,
+				B60000010000000000000001 /* OpenClawUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -363,6 +450,23 @@
 				A10000010000000000000024 /* QuickAction.swift in Sources */,
 				A10000010000000000000025 /* QuickActionInputView.swift in Sources */,
 				A10000010000000000000026 /* ClawHubView.swift in Sources */,
+				A10000010000000000000027 /* NotificationPromptView.swift in Sources */,
+				A10000010000000000000028 /* HistoryView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B70000010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000010000000000000001 /* OpenClawUITestBase.swift in Sources */,
+				B10000010000000000000002 /* OnboardingFlowTests.swift in Sources */,
+				B10000010000000000000003 /* PaywallTests.swift in Sources */,
+				B10000010000000000000004 /* HomeViewTests.swift in Sources */,
+				B10000010000000000000005 /* TabBarTests.swift in Sources */,
+				B10000010000000000000006 /* HistoryViewTests.swift in Sources */,
+				B10000010000000000000007 /* TaskChatViewTests.swift in Sources */,
+				B10000010000000000000008 /* SettingsViewTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -426,6 +530,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OpenClaw/OpenClaw.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RJWF6M2874;
@@ -457,6 +562,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OpenClaw/OpenClaw.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RJWF6M2874;
@@ -483,6 +589,42 @@
 			};
 			name = Release;
 		};
+		B80000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = RJWF6M2874;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.openclaw.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = OpenClaw;
+			};
+			name = Debug;
+		};
+		B80000010000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = RJWF6M2874;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.openclaw.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = OpenClaw;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -500,6 +642,15 @@
 			buildConfigurations = (
 				A80000010000000000000012 /* Debug */,
 				A80000010000000000000013 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B80000010000000000000003 /* Build configuration list for PBXNativeTarget "OpenClawUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B80000010000000000000001 /* Debug */,
+				B80000010000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

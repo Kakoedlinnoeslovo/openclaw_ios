@@ -113,7 +113,7 @@ def create_agent():
     name = input("  Agent name [My Assistant]: ").strip() or "My Assistant"
     print("  Personas: Professional, Friendly, Technical, Creative")
     persona = input("  Persona [Professional]: ").strip() or "Professional"
-    print("  Models: gpt-5.2, gpt-5.4, gpt-5-mini, gpt-4o, claude-sonnet")
+    print("  Models: gpt-5.2, gpt-4o, gpt-4o-mini, claude-sonnet")
     model = input("  Model [gpt-5.2]: ").strip() or "gpt-5.2"
     code, data = api("POST", "/agents", {"name": name, "persona": persona, "model": model})
     pretty(code, data)
@@ -507,6 +507,192 @@ def quick_test():
     print("\n  Timed out after 60s.")
 
 
+# ── ClawHub Skill Install Test ───────────────
+
+def test_clawhub_skill_flow():
+    """End-to-end test: install a ClawHub skill, verify is_installed detection,
+    check the agent can use it, then clean up."""
+    green, red, bold, dim, reset = "\033[32m", "\033[31m", "\033[1m", "\033[2m", "\033[0m"
+
+    def step(n, desc):
+        print(f"\n  {bold}{n}. {desc}{reset}")
+
+    def ok(msg="OK"):
+        print(f"  {green}✓ {msg}{reset}")
+
+    def fail(msg):
+        print(f"  {red}✗ {msg}{reset}")
+        return False
+
+    print(f"\n  {bold}=== ClawHub Skill Install Flow Test ==={reset}\n")
+
+    # ── 0. Ensure auth + agent ──
+    if not session["access_token"]:
+        step(0, "Logging in...")
+        code, data = api("POST", "/auth/register", {
+            "email": "skilltest@openclaw.dev", "password": "test123",
+            "display_name": "Skill Tester",
+        })
+        if code == 409:
+            code, data = api("POST", "/auth/login", {
+                "email": "skilltest@openclaw.dev", "password": "test123",
+            })
+        if code < 200 or code >= 300:
+            return fail(f"Auth failed: {data}")
+        save_tokens(data)
+
+    if not session["agent_id"]:
+        step(0, "Creating agent...")
+        code, data = api("POST", "/agents", {
+            "name": "SkillTest Agent", "persona": "Creative", "model": "gpt-5.2",
+        })
+        if 200 <= code < 300:
+            session["agent_id"] = data["id"]
+        else:
+            code, data = api("GET", "/agents")
+            agents = data.get("agents", [])
+            if not agents:
+                return fail("No agents available")
+            session["agent_id"] = agents[0]["id"]
+
+    aid = session["agent_id"]
+    test_slug = "community/image-gen"
+    test_skill_name = test_slug.split("/").pop()
+    passed = 0
+    total = 5
+
+    # ── 1. Install ClawHub skill ──
+    step(1, f"Installing ClawHub skill: {test_slug}")
+    code, data = api("POST", f"/agents/{aid}/skills/clawhub", {"slug": test_slug})
+    if 200 <= code < 300:
+        skills = data.get("skills", [])
+        installed = [s for s in skills if s.get("skill_id") == test_skill_name
+                     or s.get("skillId") == test_skill_name]
+        if installed:
+            ok(f"Installed — skill_id={installed[0].get('skill_id', installed[0].get('skillId'))}")
+            passed += 1
+        elif skills:
+            clawhub_skills = [s for s in skills if s.get("source") == "clawhub"]
+            if clawhub_skills:
+                sid = clawhub_skills[-1].get("skill_id", clawhub_skills[-1].get("skillId", "?"))
+                ok(f"Installed — skill_id={sid}")
+                test_skill_name = sid
+                passed += 1
+            else:
+                fail(f"Skill not found in agent skills after install. Got: {[s.get('skill_id') for s in skills]}")
+        else:
+            ok("Installed (no skills array in response, checking separately)")
+            passed += 1
+    elif code == 409 or "already" in str(data).lower() or "conflict" in str(data).lower():
+        ok("Already installed (conflict), continuing")
+        passed += 1
+    else:
+        fail(f"HTTP {code}: {data}")
+
+    # ── 2. Verify skill appears in agent skills list ──
+    step(2, "Verifying skill in agent skills list")
+    code, data = api("GET", f"/agents/{aid}/skills")
+    if 200 <= code < 300:
+        skills = data if isinstance(data, list) else data.get("skills", [])
+        found = any(
+            s.get("skill_id") == test_skill_name
+            or s.get("skillId") == test_skill_name
+            or s.get("skill_id", "").endswith(test_slug.split("/").pop())
+            for s in skills
+        )
+        if found:
+            ok(f"Skill present in agent skills ({len(skills)} total)")
+            passed += 1
+        else:
+            ids = [s.get("skill_id", s.get("skillId")) for s in skills]
+            fail(f"Skill not in agent skills list. Found: {ids}")
+    else:
+        fail(f"HTTP {code}: {data}")
+
+    # ── 3. Verify is_installed in ClawHub browse ──
+    step(3, "Verifying is_installed in ClawHub browse endpoint")
+    code, data = api("GET", "/skills/clawhub/browse", params={"agent_id": aid})
+    if 200 <= code < 300:
+        skills = data.get("skills", [])
+        target = [s for s in skills if s.get("slug") == test_slug]
+        if target:
+            is_inst = target[0].get("is_installed")
+            if is_inst is True:
+                ok("is_installed=true in browse results")
+                passed += 1
+            else:
+                fail(f"is_installed={is_inst} — expected true. "
+                     f"DB skill_id=\"{test_skill_name}\" vs browse expects "
+                     f"\"{test_slug.split('/').pop()}\" or "
+                     f"\"clawhub-{test_slug.replace('/', '-')}\". "
+                     f"Rebuild backend? (docker compose up -d --build api-gateway)")
+        else:
+            fail(f"Skill {test_slug} not found in browse results")
+    else:
+        fail(f"HTTP {code}: {data}")
+
+    # ── 4. Submit a task that should trigger the skill ──
+    step(4, f"Submitting task to test skill usage")
+    task_prompt = "Generate a description of what an image of a sunset over mountains would look like."
+    code, data = api("POST", f"/agents/{aid}/tasks", {"input": task_prompt})
+    if 200 <= code < 300:
+        task_id = data.get("task_id")
+        if task_id:
+            print(f"  Task queued: {task_id[:8]}... Waiting", end="", flush=True)
+            completed = False
+            for _ in range(20):
+                time.sleep(2)
+                print(".", end="", flush=True)
+                _, result = api("GET", f"/agents/{aid}/tasks/{task_id}")
+                status = result.get("status")
+                if status == "completed":
+                    output = result.get("output", "")
+                    print()
+                    ok(f"Task completed ({len(output)} chars)")
+                    if output:
+                        preview = output[:120].replace("\n", " ")
+                        print(f"  {dim}Preview: {preview}...{reset}")
+                    passed += 1
+                    completed = True
+                    break
+                elif status == "failed":
+                    print()
+                    fail(f"Task failed: {result.get('output', 'unknown')[:100]}")
+                    break
+            if not completed and status not in ("completed", "failed"):
+                print()
+                fail("Task timed out after 40s")
+        else:
+            fail(f"No task_id in response: {data}")
+    else:
+        fail(f"HTTP {code}: {data}")
+
+    # ── 5. Clean up: uninstall the skill ──
+    step(5, "Cleaning up: uninstalling skill")
+    code, data = api("DELETE", f"/agents/{aid}/skills/{test_skill_name}")
+    if 200 <= code < 300:
+        ok("Skill uninstalled")
+        passed += 1
+    else:
+        # Try the legacy prefixed ID
+        legacy_id = f"clawhub-{test_slug.replace('/', '-')}"
+        code2, data2 = api("DELETE", f"/agents/{aid}/skills/{legacy_id}")
+        if 200 <= code2 < 300:
+            ok(f"Skill uninstalled (legacy id: {legacy_id})")
+            passed += 1
+        else:
+            fail(f"HTTP {code}: {data}")
+
+    # ── Summary ──
+    color = green if passed == total else red
+    print(f"\n  {bold}Results: {color}{passed}/{total} passed{reset}\n")
+    if passed == total:
+        print(f"  {green}{bold}All ClawHub skill install tests passed!{reset}")
+    else:
+        print(f"  {red}{bold}Some tests failed — check output above.{reset}")
+    print()
+
+
 # ── Menu ─────────────────────────────────────
 
 MENU = """
@@ -535,6 +721,8 @@ MENU = """
 ║  18) Usage                19) Subscription       ║
 ║  20) Health check                                ║
 ║                                                  ║
+║  24) Test ClawHub skill install flow              ║
+║                                                  ║
 ║  99) Quick test (full end-to-end flow)           ║
 ║   0) Quit                                        ║
 ╚══════════════════════════════════════════════════╝"""
@@ -550,6 +738,7 @@ ACTIONS = {
     "21": browse_clawhub_live,
     "22": clear_history,
     "23": setup_skill,
+    "24": test_clawhub_skill_flow,
     "99": quick_test,
 }
 

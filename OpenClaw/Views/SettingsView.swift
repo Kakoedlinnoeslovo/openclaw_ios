@@ -45,23 +45,24 @@ struct SettingsView: View {
                         Circle()
                             .fill(
                                 LinearGradient(
-                                    colors: theme.accentGradient,
+                                    colors: theme.heroGradient,
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 )
                             )
-                            .frame(width: 52, height: 52)
+                            .frame(width: 56, height: 56)
+                            .shadow(color: theme.accent.opacity(0.2), radius: 8, y: 3)
 
                         Text(String(user.displayName.prefix(1)))
-                            .font(.system(size: 20, weight: .semibold, design: .rounded))
+                            .font(.system(size: 22, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white)
                     }
 
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(user.displayName)
-                            .font(.headline)
+                            .font(.system(size: 17, weight: .semibold))
                         Text(user.email)
-                            .font(.caption)
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
 
@@ -77,17 +78,23 @@ struct SettingsView: View {
     }
 
     private var tierBadge: some View {
-        Text(subscription.currentTier.rawValue.uppercased())
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                subscription.currentTier == .free
-                    ? AnyShapeStyle(Color.gray)
-                    : AnyShapeStyle(LinearGradient(colors: theme.accentGradient, startPoint: .leading, endPoint: .trailing))
-            )
-            .clipShape(Capsule())
+        HStack(spacing: 3) {
+            if subscription.currentTier != .free {
+                Image(systemName: "diamond.fill")
+                    .font(.system(size: 8))
+            }
+            Text(subscription.currentTier.rawValue.uppercased())
+                .font(.system(size: 10, weight: .bold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            subscription.currentTier == .free
+                ? AnyShapeStyle(Color.gray.opacity(0.6))
+                : AnyShapeStyle(LinearGradient(colors: theme.accentGradient, startPoint: .leading, endPoint: .trailing))
+        )
+        .clipShape(Capsule())
     }
 
     // MARK: - Subscription Card
@@ -97,12 +104,21 @@ struct SettingsView: View {
             if subscription.currentTier == .free {
                 Button { showPaywall = true } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 20))
-                            .foregroundStyle(.yellow)
-                            .frame(width: 36, height: 36)
-                            .background(.yellow.opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color(red: 1.0, green: 0.8, blue: 0.3), Color(red: 1.0, green: 0.55, blue: 0.2)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 36, height: 36)
+
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Upgrade to Pro")
@@ -116,7 +132,7 @@ struct SettingsView: View {
                         Spacer()
 
                         Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.quaternary)
                     }
                     .padding(14)
@@ -177,10 +193,10 @@ struct SettingsView: View {
 
             HStack(spacing: 12) {
                 Image(systemName: "info.circle.fill")
-                    .font(.system(size: 18))
+                    .font(.system(size: 17))
                     .foregroundStyle(.gray)
                     .frame(width: 36, height: 36)
-                    .background(Color.gray.opacity(0.12))
+                    .background(Color.gray.opacity(0.10))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
 
                 Text("Version")
@@ -190,7 +206,7 @@ struct SettingsView: View {
                 Spacer()
 
                 Text("1.0.0")
-                    .font(.subheadline)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.tertiary)
             }
             .padding(14)
@@ -222,10 +238,10 @@ struct SettingsView: View {
     private func settingsRow(icon: String, iconColor: Color, title: String, subtitle: String?) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 18))
+                .font(.system(size: 17))
                 .foregroundStyle(iconColor)
                 .frame(width: 36, height: 36)
-                .background(iconColor.opacity(0.12))
+                .background(iconColor.opacity(0.10))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
             VStack(alignment: .leading, spacing: 2) {
@@ -242,7 +258,7 @@ struct SettingsView: View {
             Spacer()
 
             Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.quaternary)
         }
         .padding(14)

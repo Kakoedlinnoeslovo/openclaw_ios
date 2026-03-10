@@ -91,9 +91,8 @@ function ensureBaseConfig() {
 const MODEL_MAP = {
   'gpt-4o-mini': 'openai/gpt-4o-mini',
   'gpt-4o': 'openai/gpt-4o',
-  'gpt-5-mini': 'openai/gpt-5-mini',
+  'gpt-5-mini': 'openai/gpt-4o-mini',
   'gpt-5.2': 'openai/gpt-5.2',
-  'gpt-5.4': 'openai/gpt-5.4',
   'claude-sonnet': 'anthropic/claude-sonnet-4-6',
 };
 
@@ -773,17 +772,149 @@ function setSkillConfig(userId, agentId, skillId, config) {
   }
 }
 
+// ── Category-specific instruction templates ─────────
+// Used to generate actionable SKILL.md stubs when the ClawHub CLI fails.
+// Each template is keyed by the catalog category and provides the agent with
+// concrete guidance on when/how to use the skill.
+
+const CATEGORY_INSTRUCTIONS = {
+  Development: `## When to use
+- The user asks for help with code, debugging, or development tooling
+- The user wants to run, test, or analyze code
+- The user needs to interact with development services (Git, CI, linters, etc.)
+
+## Instructions
+1. Clarify the programming language, framework, or tool involved
+2. Use available tools (exec, file read/write) to perform the requested task
+3. Show your work: include relevant code, command output, or diffs
+4. Explain trade-offs or alternatives when applicable
+5. Validate results — run tests or verify output before presenting
+
+## Output format
+- Use fenced code blocks with the appropriate language tag
+- Include file paths when referencing or modifying files
+- Summarize what was done and any follow-up actions needed`,
+
+  Automation: `## When to use
+- The user asks you to generate, create, or process something automatically
+- The user wants to integrate with an external API or service
+- The user needs a repetitive task handled programmatically
+
+## Instructions
+1. Understand exactly what the user wants to automate
+2. Use available tools (web/fetch, exec, file I/O) to call the relevant APIs or run commands
+3. If API keys or credentials are needed and not available, tell the user what to configure
+4. Handle errors gracefully — retry on transient failures, report clear messages on permanent ones
+5. Return results in the most useful format (URL, file, structured data)
+
+## Output format
+- Present results directly (e.g., URLs, generated content, data)
+- If a file or artifact was created, provide the path or download link
+- Include a brief summary of what was done`,
+
+  Research: `## When to use
+- The user asks to find, search, or look up information from a specific domain
+- The user wants summaries of academic papers, articles, or technical docs
+- The user needs in-depth analysis of a topic with sources
+
+## Instructions
+1. Identify key search terms, topics, or identifiers (DOIs, URLs, keywords)
+2. Use available search/fetch tools to retrieve relevant sources
+3. Read and analyze the content, extracting key findings
+4. Synthesize into a clear, well-structured summary
+5. Always cite sources with titles and URLs
+
+## Output format
+- Start with a brief overview (1-2 sentences)
+- Key findings as bullet points or numbered lists
+- Include relevant quotes or data points
+- End with source URLs and references
+- Note any gaps or limitations in the research`,
+
+  Data: `## When to use
+- The user provides data to analyze, parse, or transform
+- The user asks about databases, queries, or data processing
+- The user needs statistics, trends, or insights from structured data
+
+## Instructions
+1. Understand the data format and structure (CSV, JSON, SQL, etc.)
+2. Parse and clean the data as needed
+3. Perform the requested analysis, query, or transformation
+4. Present findings with supporting numbers and context
+5. Suggest follow-up analyses when relevant
+
+## Output format
+- Data overview: rows, columns, types, completeness
+- Key statistics or query results in tables
+- Trends and patterns in plain language
+- Actionable recommendations based on the data`,
+
+  Communication: `## When to use
+- The user wants to send, draft, or manage messages on a platform
+- The user needs to summarize conversations, threads, or channels
+- The user asks for help composing posts, replies, or notifications
+
+## Instructions
+1. Ask for context if not provided: platform, audience, tone, key points
+2. Match the requested tone and format for the target platform
+3. Keep messages concise and appropriate for the channel
+4. For summaries, extract action items, decisions, and key points
+5. Respect platform-specific conventions (character limits, threading, etc.)
+
+## Output format
+- Present drafts clearly with platform context
+- For summaries: action items, decisions, mentions, and follow-ups
+- Offer alternatives or variations when relevant`,
+
+  Productivity: `## When to use
+- The user wants to read, write, or sync content with a productivity tool
+- The user needs to organize, track, or manage information
+- The user asks for help with notes, documents, or knowledge bases
+
+## Instructions
+1. Clarify which tool or service is involved and what action is needed
+2. Use available APIs/tools to read from or write to the service
+3. Preserve formatting and structure when moving content between systems
+4. Confirm changes before making destructive operations (delete, overwrite)
+5. Report what was synced, created, or updated
+
+## Output format
+- Summarize changes made (created, updated, deleted items)
+- Show the content that was written or synced
+- Note any conflicts or items that need manual attention`,
+
+  Writing: `## When to use
+- The user asks to create, edit, or polish written content
+- The user needs help with documentation, READMEs, or technical writing
+- The user wants formatting, structure, or style suggestions
+
+## Instructions
+1. Understand the audience, purpose, and desired tone
+2. Create well-structured content with clear headings and sections
+3. Use proper formatting for the target format (Markdown, plain text, etc.)
+4. Be concise — remove filler, prefer active voice, use concrete language
+5. Offer revision options if the user wants a different tone or angle
+
+## Output format
+- Present the full document or section ready to use
+- Use the target format (Markdown, etc.) with proper structure
+- Highlight any sections that need the user's input (e.g., [YOUR NAME])
+- Offer brief notes on style choices if helpful`,
+};
+
 // ── ClawHub skill install ───────────────────────────
 // Downloads the real skill from the ClawHub registry using the clawhub CLI,
 // then parses the SKILL.md to extract metadata and setup requirements.
+// `catalogEntry` (optional) carries name/description/category from the catalog
+// and is used to generate a useful SKILL.md when the CLI is unavailable.
 
-function installClawHubSkill(userId, agentId, slug) {
+function installClawHubSkill(userId, agentId, slug, catalogEntry) {
   const ocAgentId = openclawAgentId(userId, agentId);
   const workspaceSkills = path.join(OC_HOME, 'workspaces', ocAgentId, 'skills');
   fs.mkdirSync(workspaceSkills, { recursive: true });
 
-  const displayName = slug.split('/').pop().replace(/-/g, ' ')
-    .replace(/\b\w/g, c => c.toUpperCase());
+  const displayName = catalogEntry?.name
+    || slug.split('/').pop().replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
   // Try to install via the clawhub CLI (downloads real SKILL.md + scripts)
   let cliInstalled = false;
@@ -800,34 +931,34 @@ function installClawHubSkill(userId, agentId, slug) {
     console.warn(`[clawhub] CLI install failed for ${slug}: ${err.message}`);
   }
 
-  // Determine the actual skill directory name (clawhub uses the slug's last segment)
+  // Determine the actual skill directory — always use the slug's last segment
   const slugName = slug.split('/').pop();
   let skillId = slugName;
   let skillDir = path.join(workspaceSkills, slugName);
 
-  // If CLI didn't create the directory, fall back to a generated name
   if (!fs.existsSync(skillDir)) {
-    skillId = `clawhub-${slug.replace(/\//g, '-')}`;
-    skillDir = path.join(workspaceSkills, skillId);
     fs.mkdirSync(skillDir, { recursive: true });
     cliInstalled = false;
   }
 
-  // If CLI failed, create a stub SKILL.md so the skill is at least registered
+  // If CLI failed, generate a category-aware SKILL.md from catalog metadata
   if (!cliInstalled) {
+    const description = catalogEntry?.description
+      || `Community skill: ${displayName}`;
+    const category = catalogEntry?.category || 'Automation';
+    const instructions = CATEGORY_INSTRUCTIONS[category]
+      || CATEGORY_INSTRUCTIONS.Automation;
+
     const content = `---
-name: ${skillId}
-description: "Community skill from ClawHub: ${displayName} (${slug})"
+name: ${slugName}
+description: "${description}"
 ---
 
 # ${displayName}
 
-This skill was installed from ClawHub (\`${slug}\`).
+${description}
 
-## Instructions
-
-Follow the community skill guidelines for "${displayName}".
-Refer to https://clawhub.ai/${slug} for full documentation and usage.
+${instructions}
 `;
     fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content);
   }
@@ -841,8 +972,8 @@ Refer to https://clawhub.ai/${slug} for full documentation and usage.
     skillId,
     name: meta.name || displayName,
     description: meta.description || `Community skill: ${displayName}`,
-    icon: 'puzzlepiece.extension.fill',
-    version: meta.version || '1.0.0',
+    icon: catalogEntry?.icon || 'puzzlepiece.extension.fill',
+    version: meta.version || catalogEntry?.version || '1.0.0',
     source: 'clawhub',
     setup_required: setupReqs.length > 0 || installCommands.length > 0,
     setup_requirements: setupReqs,
@@ -1016,4 +1147,5 @@ module.exports = {
   STARTER_SKILLS,
   SKILL_CONTENT,
   PERSONA_RECOMMENDATIONS,
+  VALID_MODELS: Object.keys(MODEL_MAP),
 };

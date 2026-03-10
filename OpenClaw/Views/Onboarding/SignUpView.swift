@@ -1,13 +1,14 @@
 import SwiftUI
 import AuthenticationServices
 
-struct SignUpView: View{
+struct SignUpView: View {
     
     @Environment(AuthService.self) private var auth
+    @Environment(AppTheme.self) private var theme
     
-    @State private var email = "ro.degtiarev@gmail.com"
-    @State private var password = "1234567"
-    @State private var displayName = "Roman"
+    @State private var email = ""
+    @State private var password = ""
+    @State private var displayName = ""
     @State private var isSignIn = false
     @State private var errorMessage: String?
 
@@ -26,47 +27,53 @@ struct SignUpView: View{
             .padding(.bottom, 40)
 
             VStack(spacing: 16) {
-                SignInWithAppleButton(.signIn) { request in
-                    request.requestedScopes = [.fullName, .email]
-                } onCompletion: { result in
-                    handleAppleSignIn(result)
-                }
-                .signInWithAppleButtonStyle(.black)
-                .frame(height: 52)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                if AppConstants.Features.signInWithAppleEnabled {
+                    SignInWithAppleButton(.signIn) { request in
+                        request.requestedScopes = [.fullName, .email]
+                    } onCompletion: { result in
+                        handleAppleSignIn(result)
+                    }
+                    .signInWithAppleButtonStyle(.black)
+                    .frame(height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
 
-                dividerRow
+                    dividerRow
+                }
 
                 if !isSignIn {
-                    TextField("Name", text: $displayName)
-                        .textContentType(.name)
-                        .textFieldStyle(.plain)
-                        .padding(14)
-                        .background(.quaternary.opacity(0.5))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    styledTextField(
+                        icon: "person",
+                        placeholder: "Name",
+                        text: $displayName,
+                        contentType: .name,
+                        keyboardType: .default
+                    )
                 }
 
-                TextField("Email", text: $email)
-                    .textContentType(.emailAddress)
-                    .keyboardType(.emailAddress)
-                    .autocapitalization(.none)
-                    .textFieldStyle(.plain)
-                    .padding(14)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                styledTextField(
+                    icon: "envelope",
+                    placeholder: "Email",
+                    text: $email,
+                    contentType: .emailAddress,
+                    keyboardType: .emailAddress
+                )
 
-                SecureField("Password", text: $password)
-                    .textContentType(isSignIn ? .password : .newPassword)
-                    .textFieldStyle(.plain)
-                    .padding(14)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                styledSecureField(
+                    icon: "lock",
+                    placeholder: "Password",
+                    text: $password
+                )
 
                 if let errorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: 12))
+                        Text(errorMessage)
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
                 }
 
                 Button {
@@ -74,24 +81,29 @@ struct SignUpView: View{
                 } label: {
                     if auth.isLoading {
                         ProgressView()
+                            .tint(.white)
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
+                            .padding(.vertical, 17)
                     } else {
                         Text(isSignIn ? "Sign In" : "Create Account")
-                            .font(.headline)
+                            .font(.system(size: 17, weight: .semibold))
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
+                            .padding(.vertical, 17)
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .foregroundStyle(.white)
+                .background(theme.buttonGradient)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .shadow(color: theme.accent.opacity(0.25), radius: 10, y: 5)
                 .disabled(auth.isLoading || email.isEmpty || password.isEmpty)
+                .opacity(email.isEmpty || password.isEmpty ? 0.6 : 1.0)
             }
             .padding(.horizontal, 24)
 
             Spacer()
 
             Button {
-                withAnimation { isSignIn.toggle() }
+                withAnimation(.easeInOut(duration: 0.25)) { isSignIn.toggle() }
             } label: {
                 Text(isSignIn ? "Don't have an account? **Sign Up**" : "Already have an account? **Sign In**")
                     .font(.subheadline)
@@ -101,17 +113,73 @@ struct SignUpView: View{
         }
     }
 
+    private func styledTextField(
+        icon: String,
+        placeholder: String,
+        text: Binding<String>,
+        contentType: UITextContentType,
+        keyboardType: UIKeyboardType
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15))
+                .foregroundStyle(.tertiary)
+                .frame(width: 20)
+
+            TextField(placeholder, text: text)
+                .textContentType(contentType)
+                .keyboardType(keyboardType)
+                .autocapitalization(.none)
+                .textFieldStyle(.plain)
+                .font(.subheadline)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5)
+        )
+    }
+
+    private func styledSecureField(
+        icon: String,
+        placeholder: String,
+        text: Binding<String>
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15))
+                .foregroundStyle(.tertiary)
+                .frame(width: 20)
+
+            SecureField(placeholder, text: text)
+                .textContentType(.password)
+                .textFieldStyle(.plain)
+                .font(.subheadline)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5)
+        )
+    }
+
     private var dividerRow: some View {
-        HStack {
+        HStack(spacing: 16) {
             Rectangle()
-                .fill(.quaternary)
-                .frame(height: 1)
+                .fill(Color(.separator).opacity(0.3))
+                .frame(height: 0.5)
             Text("or")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Rectangle()
-                .fill(.quaternary)
-                .frame(height: 1)
+                .fill(Color(.separator).opacity(0.3))
+                .frame(height: 0.5)
         }
     }
 

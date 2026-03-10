@@ -13,7 +13,7 @@ const {
   installSkill, uninstallSkill, installStarterSkills,
   setSkillEnabled, getSkillConfig, setSkillConfig,
   installClawHubSkill, setSkillCredentials, extractInstallCommands,
-  openclawAgentId, PERSONA_RECOMMENDATIONS,
+  openclawAgentId, PERSONA_RECOMMENDATIONS, VALID_MODELS,
 } = require('./provisioner');
 const { createWSRelay } = require('./ws-relay');
 
@@ -148,15 +148,16 @@ async function verifyAgentOwnership(req, res, next) {
 
 app.post('/auth/register', async (req, res) => {
   try {
-    const { email, password, display_name } = req.body;
-    if (!email || !password || !display_name)
-      return res.status(400).json({ error: 'Missing fields' });
+    const { email, display_name, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ error: 'Email and password are required' });
 
+    const name = display_name || email.split('@')[0];
     const hash = await bcrypt.hash(password, 10);
     const { rows } = await pool.query(
       `INSERT INTO users (email, password_hash, display_name)
        VALUES ($1, $2, $3) RETURNING *`,
-      [email, hash, display_name],
+      [email, hash, name],
     );
     const user = formatUser(rows[0]);
     const tokens = generateTokens(user.id);
@@ -173,6 +174,9 @@ app.post('/auth/register', async (req, res) => {
 app.post('/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ error: 'Email and password are required' });
+
     const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
 
@@ -275,11 +279,17 @@ app.post('/agents', authenticate, async (req, res) => {
     }
 
     const { name, persona, model } = req.body;
+    const chosenModel = model || 'gpt-5.2';
+    if (!VALID_MODELS.includes(chosenModel)) {
+      return res.status(400).json({
+        error: `Unknown model "${chosenModel}". Valid models: ${VALID_MODELS.join(', ')}`,
+      });
+    }
 
     const { rows } = await pool.query(
       `INSERT INTO agents (user_id, name, persona, model)
        VALUES ($1, $2, $3, $4) RETURNING *`,
-      [req.userId, name, persona || 'Professional', model || 'gpt-5.2'],
+      [req.userId, name, persona || 'Professional', chosenModel],
     );
     const dbAgent = rows[0];
 
@@ -460,8 +470,11 @@ app.post('/agents/:agentId/skills/clawhub', authenticate, verifyAgentOwnership, 
       }
     }
 
+    // Look up catalog metadata so the provisioner can generate a useful SKILL.md
+    const catalogEntry = CLAWHUB_SKILLS.find(s => s.slug === slug) || null;
+
     // Download + provision the ClawHub skill via CLI
-    const result = installClawHubSkill(req.userId, req.params.agentId, slug);
+    const result = installClawHubSkill(req.userId, req.params.agentId, slug, catalogEntry);
 
     await pool.query(
       `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version, enabled, source)
@@ -681,7 +694,7 @@ app.get('/agents/:agentId/tasks', authenticate, async (req, res) => {
 
 app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
   try {
-    const { input } = req.body;
+    const { input, image_data, web_search } = req.body;
     if (!input) return res.status(400).json({ error: 'Missing input' });
 
     const tier = await getUserTier(req.userId);
@@ -705,20 +718,33 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
 
     const ocAgentId = agent.openclaw_agent_id || openclawAgentId(req.userId, req.params.agentId);
 
+    let taskInput = input;
+    if (web_search) {
+      taskInput = `[WEB_SEARCH] ${input}`;
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO tasks (agent_id, user_id, input, status)
        VALUES ($1, $2, $3, 'queued') RETURNING id, status`,
-      [req.params.agentId, req.userId, input],
+      [req.params.agentId, req.userId, taskInput],
     );
     const taskId = rows[0].id;
 
-    await taskQueue.add('run', {
+    const jobData = {
       taskId,
       agentId: req.params.agentId,
       openclawAgentId: ocAgentId,
       userId: req.userId,
-      input,
-    });
+      input: taskInput,
+    };
+    if (image_data) {
+      jobData.imageData = image_data;
+    }
+    if (web_search) {
+      jobData.webSearch = true;
+    }
+
+    await taskQueue.add('run', jobData);
 
     res.status(201).json({ task_id: taskId, status: 'queued' });
   } catch (err) {
@@ -1079,7 +1105,10 @@ app.get('/skills/clawhub/browse', authenticate, async (req, res) => {
       requires_pro: false,
       permissions: [],
       source: 'clawhub',
-      is_installed: agent_id ? installedSlugs.has(s.slug.split('/').pop()) : undefined,
+      is_installed: agent_id
+        ? (installedSlugs.has(s.slug.split('/').pop())
+           || installedSlugs.has(`clawhub-${s.slug.replace(/\//g, '-')}`))
+        : undefined,
     }));
 
     res.json({ skills, total_count: skills.length });

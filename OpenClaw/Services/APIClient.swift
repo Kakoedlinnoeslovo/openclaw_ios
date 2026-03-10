@@ -118,6 +118,26 @@ actor APIClient {
     func delete(_ path: String) async throws {
         let _: EmptyResponse = try await request("DELETE", path: path)
     }
+
+    func delete<T: Decodable>(_ path: String) async throws -> T {
+        try await request("DELETE", path: path)
+    }
+
+    func healthCheck() async throws -> HealthStatus {
+        try await request("GET", path: "/health", authenticated: false)
+    }
+}
+
+struct HealthStatus: Decodable {
+    let status: String
+    let services: Services?
+
+    struct Services: Decodable {
+        let database: String?
+        let openclawGateway: String?
+    }
+
+    var isHealthy: Bool { status == "ok" }
 }
 
 private struct EmptyResponse: Decodable {}

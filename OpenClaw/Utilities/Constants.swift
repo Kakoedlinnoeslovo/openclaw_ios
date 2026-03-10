@@ -9,6 +9,7 @@ enum AppConstants {
     static let wsBaseURL = "wss://api.your-openclaw-server.com/ws"
     #endif
 
+    static let appStoreID = "6743122046"
     static let keychainService = "com.openclaw.app"
     static let accessTokenKey = "access_token"
     static let refreshTokenKey = "refresh_token"
@@ -17,6 +18,10 @@ enum AppConstants {
         static let proMonthlyID = "com.openclaw.pro.monthly"
         static let proYearlyID = "com.openclaw.pro.yearly"
         static let teamMonthlyID = "com.openclaw.team.monthly"
+    }
+
+    enum Features {
+        static let signInWithAppleEnabled = false
     }
 
     enum Limits {

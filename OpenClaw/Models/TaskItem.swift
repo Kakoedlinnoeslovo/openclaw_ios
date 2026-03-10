@@ -20,6 +20,8 @@ enum TaskStatus: String, Codable {
 
 struct TaskSubmitRequest: Codable {
     let input: String
+    var imageData: String?
+    var webSearch: Bool?
 }
 
 struct TaskSubmitResponse: Codable {

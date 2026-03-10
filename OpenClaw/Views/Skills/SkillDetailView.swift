@@ -56,7 +56,7 @@ struct SkillDetailView: View {
                 agentPickerSheet
             }
             .sheet(isPresented: $showCreateAgent, onDismiss: handleCreateAgentDismiss) {
-                AgentCreationView()
+                AgentCreationView(onCreated: nil)
             }
             .confirmationDialog("Remove Skill", isPresented: $showRemoveConfirm) {
                 Button("Remove", role: .destructive) { removeSkill() }

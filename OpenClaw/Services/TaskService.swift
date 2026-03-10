@@ -18,10 +18,23 @@ final class TaskService {
         tasks = response.tasks
     }
 
-    func submitTask(agentId: String, input: String) async throws -> TaskSubmitResponse {
+    func submitTask(
+        agentId: String,
+        input: String,
+        imageData: Data? = nil,
+        webSearch: Bool = false
+    ) async throws -> TaskSubmitResponse {
+        var request = TaskSubmitRequest(input: input)
+        if let imageData {
+            request.imageData = imageData.base64EncodedString()
+        }
+        if webSearch {
+            request.webSearch = true
+        }
+
         let response: TaskSubmitResponse = try await APIClient.shared.post(
             "/agents/\(agentId)/tasks",
-            body: TaskSubmitRequest(input: input)
+            body: request
         )
 
         let newTask = TaskItem(
@@ -40,6 +53,13 @@ final class TaskService {
 
     func getTask(agentId: String, taskId: String) async throws -> TaskItem {
         try await APIClient.shared.get("/agents/\(agentId)/tasks/\(taskId)")
+    }
+
+    func clearHistory(agentId: String) async throws -> Int {
+        struct ClearResponse: Codable { let deleted: Int }
+        let response: ClearResponse = try await APIClient.shared.delete("/agents/\(agentId)/tasks")
+        tasks.removeAll()
+        return response.deleted
     }
 
     func updateTaskFromStream(taskId: String, content: String?, status: TaskStatus) {
