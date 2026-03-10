@@ -1,9 +1,12 @@
 const express = require('express');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const pg = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const multer = require('multer');
 const { Queue } = require('bullmq');
 const Redis = require('ioredis');
 
@@ -23,7 +26,7 @@ pg.types.setTypeParser(1184, (val) =>
 );
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '30mb' }));
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
@@ -34,6 +37,31 @@ const taskQueue = new Queue(TASK_QUEUE, {
 });
 
 ensureBaseConfig();
+
+const UPLOADS_ROOT = path.join(process.env.OPENCLAW_HOME || '/openclaw-home', 'uploads');
+fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
+const ALLOWED_MIME_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/heic', 'image/heif', 'image/webp', 'image/gif',
+  'application/pdf',
+  'text/csv', 'text/plain', 'text/markdown', 'text/html',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/json', 'application/xml',
+]);
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', `Unsupported file type: ${file.mimetype}`));
+    }
+  },
+});
 
 // ──────────────────────────────────────────────
 // Helpers
@@ -470,8 +498,13 @@ app.post('/agents/:agentId/skills/clawhub', authenticate, verifyAgentOwnership, 
       }
     }
 
-    // Look up catalog metadata so the provisioner can generate a useful SKILL.md
-    const catalogEntry = CLAWHUB_SKILLS.find(s => s.slug === slug) || null;
+    // Look up catalog metadata so the provisioner can generate a useful SKILL.md.
+    // Check exact slug, then aliases, then fall back to matching on the skill
+    // name (last slug segment) so alternate prefixes resolve.
+    const catalogEntry = CLAWHUB_SKILLS.find(s => s.slug === slug)
+      || CLAWHUB_SKILLS.find(s => s.aliases?.includes(slug))
+      || CLAWHUB_SKILLS.find(s => s.slug.split('/').pop() === slug.split('/').pop())
+      || null;
 
     // Download + provision the ClawHub skill via CLI
     const result = installClawHubSkill(req.userId, req.params.agentId, slug, catalogEntry);
@@ -524,12 +557,20 @@ app.post('/agents/:agentId/skills/clawhub', authenticate, verifyAgentOwnership, 
 
     const agent = await agentWithSkills(req.params.agentId);
 
-    res.json({
+    const response = {
       ...agent,
       setup_required: result.setup_required || false,
       setup_requirements: result.setup_requirements || [],
       setup_task_id: setupTaskId,
-    });
+    };
+
+    if (result.fallback_used === 'generic') {
+      response.install_warning = `The ClawHub CLI could not download "${slug}". A generic skill stub was installed. The skill may have limited functionality.`;
+    } else if (result.fallback_used === 'bundled') {
+      response.install_note = `Installed using bundled skill content for "${result.skillId}".`;
+    }
+
+    res.json(response);
   } catch (err) {
     console.error('install clawhub skill:', err);
     res.status(500).json({ error: 'Internal error' });
@@ -681,7 +722,7 @@ app.delete('/agents/:agentId/skills/:skillId', authenticate, verifyAgentOwnershi
 app.get('/agents/:agentId/tasks', authenticate, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, agent_id, input, output, status, tokens_used, created_at, completed_at
+      `SELECT id, agent_id, input, output, status, tokens_used, file_ids, created_at, completed_at
        FROM tasks WHERE agent_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
       [req.params.agentId, req.userId],
     );
@@ -694,7 +735,7 @@ app.get('/agents/:agentId/tasks', authenticate, async (req, res) => {
 
 app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
   try {
-    const { input, image_data, web_search } = req.body;
+    const { input, image_data, web_search, file_ids } = req.body;
     if (!input) return res.status(400).json({ error: 'Missing input' });
 
     const tier = await getUserTier(req.userId);
@@ -718,17 +759,33 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
 
     const ocAgentId = agent.openclaw_agent_id || openclawAgentId(req.userId, req.params.agentId);
 
+    let validFileIds = [];
+    if (Array.isArray(file_ids) && file_ids.length > 0) {
+      const { rows: ownedFiles } = await pool.query(
+        'SELECT id FROM files WHERE id = ANY($1) AND user_id = $2',
+        [file_ids, req.userId],
+      );
+      validFileIds = ownedFiles.map(f => f.id);
+    }
+
     let taskInput = input;
     if (web_search) {
       taskInput = `[WEB_SEARCH] ${input}`;
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO tasks (agent_id, user_id, input, status)
-       VALUES ($1, $2, $3, 'queued') RETURNING id, status`,
-      [req.params.agentId, req.userId, taskInput],
+      `INSERT INTO tasks (agent_id, user_id, input, status, file_ids)
+       VALUES ($1, $2, $3, 'queued', $4) RETURNING id, status`,
+      [req.params.agentId, req.userId, taskInput, validFileIds],
     );
     const taskId = rows[0].id;
+
+    if (validFileIds.length > 0) {
+      await pool.query(
+        'UPDATE files SET task_id = $1 WHERE id = ANY($2)',
+        [taskId, validFileIds],
+      );
+    }
 
     const jobData = {
       taskId,
@@ -737,6 +794,9 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
       userId: req.userId,
       input: taskInput,
     };
+    if (validFileIds.length > 0) {
+      jobData.fileIds = validFileIds;
+    }
     if (image_data) {
       jobData.imageData = image_data;
     }
@@ -937,10 +997,15 @@ const CURATED_SKILLS = [
 const SKILL_CATEGORIES = [
   'Productivity', 'Research', 'Writing', 'Data',
   'Communication', 'Automation', 'Development',
+  'AI/ML', 'Utility', 'Web', 'Science',
+  'Media', 'Social', 'Finance', 'Location', 'Business',
 ];
 
-// ClawHub community skills – browsable natively from the iOS app
+// ClawHub community skills – browsable natively from the iOS app.
+// Sourced from https://clawhub.ai/skills?sort=downloads&nonSuspicious=true
+// and cross-referenced with bundled skills in backend/openclaw/skills/.
 const CLAWHUB_SKILLS = [
+  // ── Featured / Partner skills ────────────────────────
   {
     slug: 'openinterpreter/open-interpreter',
     name: 'Open Interpreter',
@@ -963,16 +1028,63 @@ const CLAWHUB_SKILLS = [
     stars: 19500,
     version: '0.9.0',
   },
+
+  // ── Top ClawHub skills by downloads (nonSuspicious) ──
   {
-    slug: 'community/arxiv-researcher',
-    name: 'arXiv Researcher',
-    description: 'Search and summarize academic papers from arXiv. Find relevant research by topic or keyword.',
-    icon: 'book.pages.fill',
+    slug: 'community/wacli',
+    name: 'Wacli',
+    description: 'Versatile CLI tool for command-line operations, scripting, and terminal automation.',
+    icon: 'apple.terminal.fill',
     author: 'Community',
-    category: 'Research',
-    downloads: 8700,
-    stars: 3200,
-    version: '1.1.0',
+    category: 'Utility',
+    downloads: 16415,
+    stars: 37,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/byterover',
+    name: 'ByteRover',
+    description: 'Multi-purpose task handler for diverse automation and data processing needs.',
+    icon: 'cpu.fill',
+    author: 'Community',
+    category: 'Utility',
+    downloads: 16004,
+    stars: 36,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/gog',
+    name: 'Gog',
+    description: 'Google Workspace integration — search, docs, sheets, and calendar from your agent.',
+    icon: 'globe.americas.fill',
+    author: 'Community',
+    category: 'Development',
+    downloads: 14313,
+    stars: 48,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/image-gen',
+    aliases: ['wells1137/image-gen'],
+    name: 'Image Generator',
+    description: 'Generate images from text prompts using Stable Diffusion and DALL-E APIs.',
+    icon: 'photo.artframe',
+    author: 'Community',
+    category: 'Media',
+    downloads: 15800,
+    stars: 6400,
+    version: '1.2.0',
+  },
+  {
+    slug: 'community/slack-assistant',
+    name: 'Slack Assistant',
+    description: 'Send messages, summarize channels, and respond to threads in Slack workspaces.',
+    icon: 'bubble.left.and.bubble.right.fill',
+    author: 'Community',
+    category: 'Social',
+    downloads: 14500,
+    stars: 5200,
+    version: '1.3.0',
   },
   {
     slug: 'community/github-issues',
@@ -986,26 +1098,15 @@ const CLAWHUB_SKILLS = [
     version: '1.2.0',
   },
   {
-    slug: 'community/notion-sync',
-    name: 'Notion Sync',
-    description: 'Read and write Notion pages and databases. Keep your knowledge base up to date.',
-    icon: 'doc.on.doc.fill',
+    slug: 'community/agent-browser',
+    name: 'Agent Browser',
+    description: 'Browser automation for web interactions — scraping, form filling, and page navigation.',
+    icon: 'safari.fill',
     author: 'Community',
-    category: 'Productivity',
-    downloads: 9800,
-    stars: 2900,
-    version: '1.0.3',
-  },
-  {
-    slug: 'community/slack-assistant',
-    name: 'Slack Assistant',
-    description: 'Send messages, summarize channels, and respond to threads in Slack workspaces.',
-    icon: 'bubble.left.and.bubble.right.fill',
-    author: 'Community',
-    category: 'Communication',
-    downloads: 14500,
-    stars: 5200,
-    version: '1.3.0',
+    category: 'Web',
+    downloads: 11836,
+    stars: 43,
+    version: '1.0.0',
   },
   {
     slug: 'community/pdf-reader',
@@ -1019,15 +1120,37 @@ const CLAWHUB_SKILLS = [
     version: '1.0.1',
   },
   {
-    slug: 'community/social-poster',
-    name: 'Social Media Poster',
-    description: 'Draft and schedule posts for Twitter/X, LinkedIn, and Mastodon with AI-generated captions.',
-    icon: 'megaphone.fill',
+    slug: 'community/summarize',
+    name: 'Summarize',
+    description: 'Intelligent text summarization — condense long documents, articles, and conversations.',
+    icon: 'doc.text.magnifyingglass',
     author: 'Community',
-    category: 'Communication',
-    downloads: 7600,
-    stars: 2100,
-    version: '0.8.0',
+    category: 'Productivity',
+    downloads: 10956,
+    stars: 28,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/github',
+    name: 'GitHub',
+    description: 'Repository and workflow management — PRs, commits, actions, and code review.',
+    icon: 'chevron.left.forwardslash.chevron.right',
+    author: 'Community',
+    category: 'Development',
+    downloads: 10611,
+    stars: 15,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/sonoscli',
+    name: 'Sonoscli',
+    description: 'Control Sonos speakers — play, pause, group, and manage your audio system via CLI.',
+    icon: 'hifispeaker.fill',
+    author: 'Community',
+    category: 'Media',
+    downloads: 10304,
+    stars: 6,
+    version: '1.0.0',
   },
   {
     slug: 'community/sql-assistant',
@@ -1041,26 +1164,26 @@ const CLAWHUB_SKILLS = [
     version: '1.1.0',
   },
   {
-    slug: 'community/markdown-writer',
-    name: 'Markdown Writer',
-    description: 'Create polished Markdown documents, READMEs, and documentation with formatting helpers.',
-    icon: 'text.document.fill',
+    slug: 'community/notion-sync',
+    name: 'Notion Sync',
+    description: 'Read and write Notion pages and databases. Keep your knowledge base up to date.',
+    icon: 'doc.on.doc.fill',
     author: 'Community',
-    category: 'Writing',
-    downloads: 6200,
-    stars: 1800,
-    version: '1.0.0',
+    category: 'Productivity',
+    downloads: 9800,
+    stars: 2900,
+    version: '1.0.3',
   },
   {
-    slug: 'community/image-gen',
-    name: 'Image Generator',
-    description: 'Generate images from text prompts using Stable Diffusion and DALL-E APIs.',
-    icon: 'photo.artframe',
+    slug: 'community/weather',
+    name: 'Weather',
+    description: 'Real-time weather information and forecasts for any location worldwide.',
+    icon: 'cloud.sun.fill',
     author: 'Community',
-    category: 'Automation',
-    downloads: 15800,
-    stars: 6400,
-    version: '1.2.0',
+    category: 'Location',
+    downloads: 9002,
+    stars: 13,
+    version: '1.0.0',
   },
   {
     slug: 'community/unit-test-writer',
@@ -1073,6 +1196,488 @@ const CLAWHUB_SKILLS = [
     stars: 3100,
     version: '1.0.2',
   },
+  {
+    slug: 'community/humanize-ai-text',
+    name: 'Humanize AI Text',
+    description: 'Transform AI-generated text to sound more natural and human-like. Reduce robotic tone.',
+    icon: 'person.text.rectangle.fill',
+    author: 'Community',
+    category: 'Writing',
+    downloads: 8771,
+    stars: 20,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/arxiv-researcher',
+    name: 'arXiv Researcher',
+    description: 'Search and summarize academic papers from arXiv. Find relevant research by topic or keyword.',
+    icon: 'book.pages.fill',
+    author: 'Community',
+    category: 'Research',
+    downloads: 8700,
+    stars: 3200,
+    version: '1.1.0',
+  },
+  {
+    slug: 'community/tavily-web-search',
+    name: 'Tavily Web Search',
+    description: 'Advanced web search powered by Tavily for accurate, real-time search results and scraping.',
+    icon: 'magnifyingglass',
+    author: 'Community',
+    category: 'Web',
+    downloads: 8142,
+    stars: 10,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/bird',
+    name: 'Bird',
+    description: 'General-purpose utility for file operations, text processing, and everyday tasks.',
+    icon: 'bird.fill',
+    author: 'Community',
+    category: 'Utility',
+    downloads: 7767,
+    stars: 27,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/social-poster',
+    name: 'Social Media Poster',
+    description: 'Draft and schedule posts for Twitter/X, LinkedIn, and Mastodon with AI-generated captions.',
+    icon: 'megaphone.fill',
+    author: 'Community',
+    category: 'Social',
+    downloads: 7600,
+    stars: 2100,
+    version: '0.8.0',
+  },
+  {
+    slug: 'community/find-skills',
+    name: 'Find Skills',
+    description: 'Discover and manage ClawHub skills — search, filter, and install from the registry.',
+    icon: 'magnifyingglass.circle.fill',
+    author: 'Community',
+    category: 'Utility',
+    downloads: 7077,
+    stars: 15,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/proactive-agent',
+    name: 'Proactive Agent',
+    description: 'Proactive task execution framework — anticipates needs and acts autonomously on schedule.',
+    icon: 'bolt.circle.fill',
+    author: 'Community',
+    category: 'AI/ML',
+    downloads: 7010,
+    stars: 49,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/markdown-writer',
+    name: 'Markdown Writer',
+    description: 'Create polished Markdown documents, READMEs, and documentation with formatting helpers.',
+    icon: 'text.document.fill',
+    author: 'Community',
+    category: 'Writing',
+    downloads: 6200,
+    stars: 1800,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/obsidian',
+    name: 'Obsidian',
+    description: 'Obsidian knowledge base integration — manage notes, backlinks, and knowledge graphs.',
+    icon: 'note.text',
+    author: 'Community',
+    category: 'Productivity',
+    downloads: 5791,
+    stars: 12,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/nano-banana-pro',
+    name: 'Nano Banana Pro',
+    description: 'Advanced text processing and document analysis for professional content editing.',
+    icon: 'doc.richtext.fill',
+    author: 'Community',
+    category: 'Productivity',
+    downloads: 5704,
+    stars: 20,
+    version: '1.0.0',
+  },
+
+  // ── Media & Audio ────────────────────────────────────
+  {
+    slug: 'community/youtube-factory',
+    name: 'YouTube Factory',
+    description: 'YouTube channel management — video processing, metadata, and content automation.',
+    icon: 'play.rectangle.fill',
+    author: 'Community',
+    category: 'Media',
+    downloads: 4200,
+    stars: 18,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/openai-whisper',
+    name: 'OpenAI Whisper',
+    description: 'Speech-to-text transcription using OpenAI Whisper. Transcribe audio and video files.',
+    icon: 'waveform.circle.fill',
+    author: 'Community',
+    category: 'Media',
+    downloads: 3800,
+    stars: 22,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/video-frames',
+    name: 'Video Frames',
+    description: 'Extract frames from video files for analysis, thumbnails, and visual processing.',
+    icon: 'film.stack.fill',
+    author: 'Community',
+    category: 'Media',
+    downloads: 2900,
+    stars: 8,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/spotify-player',
+    name: 'Spotify Player',
+    description: 'Control Spotify playback — play, pause, search, and manage playlists via your agent.',
+    icon: 'music.note.list',
+    author: 'Community',
+    category: 'Media',
+    downloads: 3100,
+    stars: 14,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/youtube-watcher',
+    name: 'YouTube Watcher',
+    description: 'Monitor YouTube channels for new content. Get notifications on new uploads.',
+    icon: 'play.tv.fill',
+    author: 'Community',
+    category: 'Media',
+    downloads: 2700,
+    stars: 27,
+    version: '1.0.0',
+  },
+
+  // ── Web & Search ─────────────────────────────────────
+  {
+    slug: 'community/google-search',
+    name: 'Google Search',
+    description: 'Search Google directly from your agent. Get web results, images, and news.',
+    icon: 'globe.desk',
+    author: 'Community',
+    category: 'Web',
+    downloads: 4500,
+    stars: 12,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/web-scraper',
+    name: 'Web Scraper',
+    description: 'Extract structured data from websites. CSS selectors, pagination, and data export.',
+    icon: 'network',
+    author: 'Community',
+    category: 'Web',
+    downloads: 3200,
+    stars: 9,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/http-client',
+    name: 'HTTP Client',
+    description: 'Make HTTP requests to APIs and web services. REST, GraphQL, and webhook support.',
+    icon: 'arrow.up.arrow.down.circle.fill',
+    author: 'Community',
+    category: 'Web',
+    downloads: 2800,
+    stars: 7,
+    version: '1.0.0',
+  },
+
+  // ── Social & Communication ───────────────────────────
+  {
+    slug: 'community/twitter-bot',
+    name: 'Twitter/X Bot',
+    description: 'Automate Twitter/X posting, engagement, and thread creation.',
+    icon: 'at.circle.fill',
+    author: 'Community',
+    category: 'Social',
+    downloads: 4100,
+    stars: 19,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/discord-manager',
+    name: 'Discord Manager',
+    description: 'Discord server management — moderate, automate, and interact with channels and users.',
+    icon: 'gamecontroller.fill',
+    author: 'Community',
+    category: 'Social',
+    downloads: 3600,
+    stars: 15,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/telegram-bot',
+    name: 'Telegram Bot',
+    description: 'Build and manage Telegram bots — send messages, handle commands, and inline queries.',
+    icon: 'paperplane.fill',
+    author: 'Community',
+    category: 'Social',
+    downloads: 3200,
+    stars: 11,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/slack-integration',
+    name: 'Slack Integration',
+    description: 'Deep Slack workspace integration — channels, threads, reactions, and app commands.',
+    icon: 'number.circle.fill',
+    author: 'Community',
+    category: 'Social',
+    downloads: 2900,
+    stars: 10,
+    version: '1.0.0',
+  },
+
+  // ── AI/ML ────────────────────────────────────────────
+  {
+    slug: 'community/humanizer',
+    name: 'Humanizer',
+    description: 'Make AI-generated text more natural and human-like. Improve readability and engagement.',
+    icon: 'person.crop.circle.badge.checkmark',
+    author: 'Community',
+    category: 'AI/ML',
+    downloads: 3800,
+    stars: 28,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/home-assistant',
+    name: 'Home Assistant',
+    description: 'Smart home integration — control lights, switches, sensors, and automations.',
+    icon: 'house.fill',
+    author: 'Community',
+    category: 'AI/ML',
+    downloads: 3400,
+    stars: 28,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/ai-model-router',
+    name: 'AI Model Router',
+    description: 'Intelligently route requests to the optimal AI model based on cost and capability.',
+    icon: 'arrow.triangle.branch',
+    author: 'Community',
+    category: 'AI/ML',
+    downloads: 3100,
+    stars: 24,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/prompt-engineer',
+    name: 'Prompt Engineer',
+    description: 'Advanced prompt optimization — craft better prompts for higher quality AI outputs.',
+    icon: 'text.cursor',
+    author: 'Community',
+    category: 'AI/ML',
+    downloads: 2800,
+    stars: 22,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/coding-agent',
+    name: 'Coding Agent',
+    description: 'Autonomous coding assistant — write, debug, refactor, and review code across languages.',
+    icon: 'curlybraces',
+    author: 'Community',
+    category: 'AI/ML',
+    downloads: 4500,
+    stars: 35,
+    version: '1.0.0',
+  },
+
+  // ── Finance ──────────────────────────────────────────
+  {
+    slug: 'community/stock-analysis',
+    name: 'Stock Analysis',
+    description: 'Comprehensive stock market analysis — equity research, charts, and fundamental data.',
+    icon: 'chart.line.uptrend.xyaxis',
+    author: 'Community',
+    category: 'Finance',
+    downloads: 2400,
+    stars: 8,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/crypto-cog',
+    name: 'Crypto Cog',
+    description: 'Cryptocurrency research and trading signals — price tracking, analysis, and alerts.',
+    icon: 'bitcoinsign.circle.fill',
+    author: 'Community',
+    category: 'Finance',
+    downloads: 2100,
+    stars: 6,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/fin-cog',
+    name: 'Fin Cog',
+    description: 'Financial data analysis and modeling — revenue, expenses, and investment metrics.',
+    icon: 'dollarsign.circle.fill',
+    author: 'Community',
+    category: 'Finance',
+    downloads: 1800,
+    stars: 5,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/portfolio-manager',
+    name: 'Portfolio Manager',
+    description: 'Track and rebalance investment portfolios. Asset allocation and performance analytics.',
+    icon: 'chart.pie.fill',
+    author: 'Community',
+    category: 'Finance',
+    downloads: 1500,
+    stars: 4,
+    version: '1.0.0',
+  },
+
+  // ── Location ─────────────────────────────────────────
+  {
+    slug: 'community/goplaces',
+    name: 'GoPlaces',
+    description: 'Location-based services — find places, get directions, and explore points of interest.',
+    icon: 'map.fill',
+    author: 'Community',
+    category: 'Location',
+    downloads: 3200,
+    stars: 10,
+    version: '1.0.0',
+  },
+
+  // ── Productivity & Notes ─────────────────────────────
+  {
+    slug: 'community/apple-notes',
+    name: 'Apple Notes',
+    description: 'Read and write Apple Notes. Search, create, and organize notes from your agent.',
+    icon: 'note.text',
+    author: 'Community',
+    category: 'Productivity',
+    downloads: 2800,
+    stars: 9,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/apple-reminders',
+    name: 'Apple Reminders',
+    description: 'Manage Apple Reminders — create, complete, and organize tasks and lists.',
+    icon: 'checklist',
+    author: 'Community',
+    category: 'Productivity',
+    downloads: 2500,
+    stars: 8,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/trello',
+    name: 'Trello',
+    description: 'Trello board management — cards, lists, labels, and team collaboration.',
+    icon: 'square.grid.2x2.fill',
+    author: 'Community',
+    category: 'Productivity',
+    downloads: 2400,
+    stars: 7,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/things-mac',
+    name: 'Things',
+    description: 'Things 3 task manager integration — projects, areas, and GTD workflows on Mac.',
+    icon: 'checkmark.circle',
+    author: 'Community',
+    category: 'Productivity',
+    downloads: 2200,
+    stars: 11,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/model-usage',
+    name: 'Model Usage',
+    description: 'Track and optimize AI model usage and costs. Monitor API consumption and budgets.',
+    icon: 'gauge.with.dots.needle.bottom.50percent',
+    author: 'Community',
+    category: 'Productivity',
+    downloads: 1800,
+    stars: 5,
+    version: '1.0.0',
+  },
+
+  // ── Data & Science ───────────────────────────────────
+  {
+    slug: 'community/nano-pdf',
+    name: 'Nano PDF',
+    description: 'Lightweight PDF processing — extract, merge, split, and convert PDF documents.',
+    icon: 'doc.fill',
+    author: 'Community',
+    category: 'Data',
+    downloads: 2600,
+    stars: 7,
+    version: '1.0.0',
+  },
+
+  // ── Utility & System ─────────────────────────────────
+  {
+    slug: 'community/1password',
+    name: '1Password',
+    description: 'Securely access 1Password vaults — read secrets, passwords, and secure notes.',
+    icon: 'lock.shield.fill',
+    author: 'Community',
+    category: 'Utility',
+    downloads: 2400,
+    stars: 12,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/openhue',
+    name: 'OpenHue',
+    description: 'Philips Hue smart lighting control — scenes, colors, and room automation.',
+    icon: 'lightbulb.fill',
+    author: 'Community',
+    category: 'Utility',
+    downloads: 1800,
+    stars: 6,
+    version: '1.0.0',
+  },
+  {
+    slug: 'community/camsnap',
+    name: 'CamSnap',
+    description: 'Capture photos and screenshots from connected cameras and displays.',
+    icon: 'camera.fill',
+    author: 'Community',
+    category: 'Utility',
+    downloads: 1500,
+    stars: 5,
+    version: '1.0.0',
+  },
+
+  // ── Business ─────────────────────────────────────────
+  {
+    slug: 'community/blogwatcher',
+    name: 'Blog Watcher',
+    description: 'Monitor blogs and RSS feeds for new content. Track competitors and industry news.',
+    icon: 'newspaper.fill',
+    author: 'Community',
+    category: 'Business',
+    downloads: 1900,
+    stars: 6,
+    version: '1.0.0',
+  },
 ];
 
 app.get('/skills/clawhub/browse', authenticate, async (req, res) => {
@@ -1084,7 +1689,10 @@ app.get('/skills/clawhub/browse', authenticate, async (req, res) => {
     if (q) {
       const lower = q.toLowerCase();
       filtered = filtered.filter(
-        s => s.name.toLowerCase().includes(lower) || s.description.toLowerCase().includes(lower),
+        s => s.name.toLowerCase().includes(lower)
+          || s.description.toLowerCase().includes(lower)
+          || s.slug.toLowerCase().includes(lower)
+          || s.aliases?.some(a => a.toLowerCase().includes(lower)),
       );
     }
 
@@ -1277,6 +1885,97 @@ app.get('/usage', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('usage:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// ──────────────────────────────────────────────
+// Files
+// ──────────────────────────────────────────────
+
+app.post('/files/upload', authenticate, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file provided' });
+
+    const fileId = crypto.randomUUID();
+    const userDir = path.join(UPLOADS_ROOT, req.userId, fileId);
+    fs.mkdirSync(userDir, { recursive: true });
+
+    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filePath = path.join(userDir, safeName);
+    fs.writeFileSync(filePath, req.file.buffer);
+
+    await pool.query(
+      `INSERT INTO files (id, user_id, filename, mime_type, size_bytes, storage_path, source)
+       VALUES ($1, $2, $3, $4, $5, $6, 'upload')`,
+      [fileId, req.userId, req.file.originalname, req.file.mimetype, req.file.size, filePath],
+    );
+
+    res.status(201).json({
+      file_id: fileId,
+      filename: req.file.originalname,
+      mime_type: req.file.mimetype,
+      size_bytes: req.file.size,
+    });
+  } catch (err) {
+    if (err instanceof multer.MulterError) {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error('file upload:', err);
+    res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+app.get('/files/:fileId', authenticate, async (req, res) => {
+  try {
+    const { rows: [file] } = await pool.query(
+      'SELECT id, filename, mime_type, size_bytes, source, created_at FROM files WHERE id = $1 AND user_id = $2',
+      [req.params.fileId, req.userId],
+    );
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    res.json(file);
+  } catch (err) {
+    console.error('get file:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.get('/files/:fileId/download', authenticate, async (req, res) => {
+  try {
+    const { rows: [file] } = await pool.query(
+      'SELECT filename, mime_type, storage_path FROM files WHERE id = $1 AND user_id = $2',
+      [req.params.fileId, req.userId],
+    );
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    if (!fs.existsSync(file.storage_path)) {
+      return res.status(404).json({ error: 'File data missing' });
+    }
+
+    res.setHeader('Content-Type', file.mime_type);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.filename)}"`);
+    fs.createReadStream(file.storage_path).pipe(res);
+  } catch (err) {
+    console.error('download file:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.delete('/files/:fileId', authenticate, async (req, res) => {
+  try {
+    const { rows: [file] } = await pool.query(
+      'SELECT storage_path FROM files WHERE id = $1 AND user_id = $2',
+      [req.params.fileId, req.userId],
+    );
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    const dir = path.dirname(file.storage_path);
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    await pool.query('DELETE FROM files WHERE id = $1', [req.params.fileId]);
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('delete file:', err);
     res.status(500).json({ error: 'Internal error' });
   }
 });

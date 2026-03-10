@@ -136,6 +136,8 @@ struct ClawHubInstallResponse: Codable {
     let setupRequired: Bool?
     let setupRequirements: [SkillSetupRequirement]?
     let setupTaskId: String?
+    let installWarning: String?
+    let installNote: String?
 
     init(from decoder: Decoder) throws {
         let agentFields = try Agent(from: decoder)
@@ -145,12 +147,16 @@ struct ClawHubInstallResponse: Codable {
         self.setupRequired = try container.decodeIfPresent(Bool.self, forKey: .setupRequired)
         self.setupRequirements = try container.decodeIfPresent([SkillSetupRequirement].self, forKey: .setupRequirements)
         self.setupTaskId = try container.decodeIfPresent(String.self, forKey: .setupTaskId)
+        self.installWarning = try container.decodeIfPresent(String.self, forKey: .installWarning)
+        self.installNote = try container.decodeIfPresent(String.self, forKey: .installNote)
     }
 
     private enum ExtraKeys: String, CodingKey {
         case setupRequired
         case setupRequirements
         case setupTaskId
+        case installWarning
+        case installNote
     }
 }
 

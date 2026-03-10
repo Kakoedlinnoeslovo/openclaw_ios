@@ -66,6 +66,7 @@ CREATE TABLE tasks (
     output TEXT,
     status VARCHAR(20) NOT NULL DEFAULT 'queued',
     tokens_used INTEGER,
+    file_ids UUID[] DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at TIMESTAMPTZ
 );
@@ -76,6 +77,22 @@ CREATE INDEX idx_tasks_created ON tasks(created_at DESC);
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tasks_isolation ON tasks
     USING (user_id = current_setting('app.current_user_id')::UUID);
+
+-- Files (uploaded attachments and generated outputs)
+CREATE TABLE files (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    filename VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(100) NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    storage_path TEXT NOT NULL,
+    source VARCHAR(20) NOT NULL DEFAULT 'upload',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_files_user ON files(user_id);
+CREATE INDEX idx_files_task ON files(task_id);
 
 -- Subscriptions
 CREATE TABLE subscriptions (
@@ -139,5 +156,30 @@ BEGIN
         WHERE table_name = 'agent_skills' AND column_name = 'config'
     ) THEN
         ALTER TABLE agent_skills ADD COLUMN config JSONB DEFAULT '{}';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'tasks' AND column_name = 'file_ids'
+    ) THEN
+        ALTER TABLE tasks ADD COLUMN file_ids UUID[] DEFAULT '{}';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'files'
+    ) THEN
+        CREATE TABLE files (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+            filename VARCHAR(255) NOT NULL,
+            mime_type VARCHAR(100) NOT NULL,
+            size_bytes BIGINT NOT NULL,
+            storage_path TEXT NOT NULL,
+            source VARCHAR(20) NOT NULL DEFAULT 'upload',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX idx_files_user ON files(user_id);
+        CREATE INDEX idx_files_task ON files(task_id);
     END IF;
 END $$;

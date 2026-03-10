@@ -28,6 +28,15 @@ enum SkillCategory: String, Codable, CaseIterable, Identifiable {
     case communication = "Communication"
     case automation = "Automation"
     case development = "Development"
+    case aiMl = "AI/ML"
+    case utility = "Utility"
+    case web = "Web"
+    case science = "Science"
+    case media = "Media"
+    case social = "Social"
+    case finance = "Finance"
+    case location = "Location"
+    case business = "Business"
 
     var id: String { rawValue }
 
@@ -40,6 +49,15 @@ enum SkillCategory: String, Codable, CaseIterable, Identifiable {
         case .communication: return "message.circle.fill"
         case .automation: return "gearshape.2.fill"
         case .development: return "chevron.left.forwardslash.chevron.right"
+        case .aiMl: return "brain"
+        case .utility: return "wrench.fill"
+        case .web: return "globe"
+        case .science: return "flask.fill"
+        case .media: return "play.rectangle.fill"
+        case .social: return "person.2.fill"
+        case .finance: return "chart.line.uptrend.xyaxis"
+        case .location: return "location.fill"
+        case .business: return "briefcase.fill"
         }
     }
 }

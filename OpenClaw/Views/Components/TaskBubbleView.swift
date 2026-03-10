@@ -1,14 +1,21 @@
 import SwiftUI
+import QuickLook
 
 struct TaskBubbleView: View {
     @Environment(AppTheme.self) private var theme
     let task: TaskItem
 
     @State private var fullScreenImage: URL?
+    @State private var previewFileURL: URL?
+    @State private var isDownloading: [String: Bool] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             userBubble
+
+            if let fileIds = task.fileIds, !fileIds.isEmpty {
+                userFileBadges(fileIds)
+            }
 
             if let output = task.output, !output.isEmpty {
                 agentBubble(output)
@@ -23,6 +30,7 @@ struct TaskBubbleView: View {
                 fullScreenImage = nil
             }
         }
+        .quickLookPreview($previewFileURL)
     }
 
     // MARK: - User Bubble
@@ -47,6 +55,23 @@ struct TaskBubbleView: View {
         }
     }
 
+    private func userFileBadges(_ fileIds: [String]) -> some View {
+        HStack {
+            Spacer(minLength: 60)
+            HStack(spacing: 4) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 10))
+                Text("\(fileIds.count) file\(fileIds.count == 1 ? "" : "s") attached")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Color(.tertiarySystemGroupedBackground))
+            .clipShape(Capsule())
+        }
+    }
+
     // MARK: - Agent Bubble
 
     private func agentBubble(_ text: String) -> some View {
@@ -64,6 +89,8 @@ struct TaskBubbleView: View {
                         }
                     case .image(let url):
                         imageBlock(url: url)
+                    case .file(let fileId, let filename):
+                        fileCard(fileId: fileId, filename: filename)
                     }
                 }
 
@@ -81,9 +108,39 @@ struct TaskBubbleView: View {
             .padding(.vertical, 10)
             .background(Color(.secondarySystemGroupedBackground))
             .clipShape(ChatBubbleShape(isUser: false))
+            .contextMenu {
+                Button {
+                    UIPasteboard.general.string = text
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+
+                ShareLink(
+                    item: text,
+                    subject: Text("Agent Response"),
+                    message: Text("")
+                ) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+
+                Button {
+                    saveResponseAsFile(text)
+                } label: {
+                    Label("Save as File", systemImage: "square.and.arrow.down")
+                }
+            }
 
             Spacer(minLength: 60)
         }
+    }
+
+    private func saveResponseAsFile(_ text: String) {
+        guard let data = text.data(using: .utf8) else { return }
+        let tempDir = FileManager.default.temporaryDirectory
+        let filename = "response_\(task.id.prefix(8)).md"
+        let fileURL = tempDir.appendingPathComponent(filename)
+        try? data.write(to: fileURL)
+        previewFileURL = fileURL
     }
 
     // MARK: - Image Block
@@ -136,24 +193,98 @@ struct TaskBubbleView: View {
         }
     }
 
+    // MARK: - File Card
+
+    private func fileCard(fileId: String, filename: String) -> some View {
+        Button {
+            downloadAndPreview(fileId: fileId, filename: filename)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: iconForFilename(filename))
+                    .font(.system(size: 20))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 36, height: 36)
+                    .background(theme.accent.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(filename)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+                    Text("Tap to open")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if isDownloading[fileId] == true {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                } else {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(10)
+            .background(Color(.tertiarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func iconForFilename(_ filename: String) -> String {
+        let ext = (filename as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf": return "doc.richtext"
+        case "csv", "xlsx", "xls": return "tablecells"
+        case "doc", "docx": return "doc.text"
+        case "txt", "md": return "doc.plaintext"
+        case "jpg", "jpeg", "png", "gif", "webp", "heic": return "photo"
+        case "json", "xml": return "doc.text.magnifyingglass"
+        default: return "doc"
+        }
+    }
+
+    private func downloadAndPreview(fileId: String, filename: String) {
+        guard isDownloading[fileId] != true else { return }
+        isDownloading[fileId] = true
+
+        Task {
+            do {
+                let (data, resolvedName, _) = try await APIClient.shared.downloadFile(fileId: fileId)
+                let name = resolvedName == "download" ? filename : resolvedName
+                let tempDir = FileManager.default.temporaryDirectory
+                let fileURL = tempDir.appendingPathComponent(name)
+                try data.write(to: fileURL)
+                previewFileURL = fileURL
+            } catch {
+                print("Download failed: \(error.localizedDescription)")
+            }
+            isDownloading[fileId] = false
+        }
+    }
+
     // MARK: - Content Parsing
 
     private enum ContentBlock {
         case text(String)
         case image(URL)
+        case file(fileId: String, filename: String)
     }
 
     private func parseContent(_ text: String) -> [ContentBlock] {
         var blocks: [ContentBlock] = []
         var remaining = text
 
-        // Pattern: markdown images ![alt](url)
         let mdPattern = /!\[([^\]]*)\]\(([^)]+)\)/
 
         while let match = remaining.firstMatch(of: mdPattern) {
             let before = String(remaining[remaining.startIndex..<match.range.lowerBound])
             if !before.isEmpty {
-                blocks.append(.text(before))
+                blocks.append(contentsOf: parseTextAndFiles(before))
             }
             let urlStr = String(match.output.2)
             if let url = URL(string: urlStr) {
@@ -164,7 +295,6 @@ struct TaskBubbleView: View {
             remaining = String(remaining[match.range.upperBound...])
         }
 
-        // Check for bare image URLs in the remaining text
         let lines = remaining.split(separator: "\n", omittingEmptySubsequences: false)
         var textBuffer = ""
 
@@ -172,7 +302,7 @@ struct TaskBubbleView: View {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if let url = extractImageURL(from: trimmed) {
                 if !textBuffer.isEmpty {
-                    blocks.append(.text(textBuffer))
+                    blocks.append(contentsOf: parseTextAndFiles(textBuffer))
                     textBuffer = ""
                 }
                 blocks.append(.image(url))
@@ -183,11 +313,36 @@ struct TaskBubbleView: View {
         }
 
         if !textBuffer.isEmpty {
-            blocks.append(.text(textBuffer))
+            blocks.append(contentsOf: parseTextAndFiles(textBuffer))
         }
 
         if blocks.isEmpty {
             blocks.append(.text(text))
+        }
+
+        return blocks
+    }
+
+    // Pattern: [FILE:uuid:filename.ext]
+    private static let filePattern = /\[FILE:([a-f0-9\-]{36}):([^\]]+)\]/
+
+    private func parseTextAndFiles(_ text: String) -> [ContentBlock] {
+        var blocks: [ContentBlock] = []
+        var remaining = text
+
+        while let match = remaining.firstMatch(of: Self.filePattern) {
+            let before = String(remaining[remaining.startIndex..<match.range.lowerBound])
+            if !before.isEmpty {
+                blocks.append(.text(before))
+            }
+            let fileId = String(match.output.1)
+            let filename = String(match.output.2)
+            blocks.append(.file(fileId: fileId, filename: filename))
+            remaining = String(remaining[match.range.upperBound...])
+        }
+
+        if !remaining.isEmpty {
+            blocks.append(.text(remaining))
         }
 
         return blocks

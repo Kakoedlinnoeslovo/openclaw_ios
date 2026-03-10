@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 
 struct TaskChatView: View {
     @Environment(AppTheme.self) private var theme
@@ -13,14 +14,18 @@ struct TaskChatView: View {
     @State private var hasSentInitial = false
     @State private var showClearConfirmation = false
     @State private var webSearchEnabled = false
-    @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var selectedImageData: Data?
-    @State private var showAttachmentMenu = false
+
+    @State private var attachments: [FileAttachment] = []
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var showDocumentPicker = false
+    @State private var isUploading = false
+
+    private let maxFileSize = 25 * 1024 * 1024
 
     var body: some View {
         VStack(spacing: 0) {
             chatMessages
-            imagePreview
+            attachmentPreview
             chatInputBar
         }
         .background(Color(.systemGroupedBackground))
@@ -54,8 +59,23 @@ struct TaskChatView: View {
         } message: {
             Text("This will permanently delete all completed tasks for this agent.")
         }
-        .onChange(of: selectedPhotoItem) { _, newItem in
-            loadImage(from: newItem)
+        .onChange(of: selectedPhotoItems) { _, newItems in
+            loadPhotos(from: newItems)
+        }
+        .alert("File Too Large", isPresented: .init(
+            get: { fileSizeError != nil },
+            set: { if !$0 { fileSizeError = nil } }
+        )) {
+            Button("OK", role: .cancel) { fileSizeError = nil }
+        } message: {
+            Text(fileSizeError ?? "")
+        }
+        .sheet(isPresented: $showDocumentPicker) {
+            DocumentPicker(
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: true,
+                onPick: handlePickedDocuments
+            )
         }
         .task {
             try? await taskService.fetchTasks(agentId: agent.id)
@@ -155,35 +175,76 @@ struct TaskChatView: View {
         }
     }
 
-    // MARK: - Image Preview
+    // MARK: - Attachment Preview
 
     @ViewBuilder
-    private var imagePreview: some View {
-        if let imageData = selectedImageData, let uiImage = UIImage(data: imageData) {
-            HStack {
-                ZStack(alignment: .topTrailing) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 64, height: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                    Button {
-                        selectedImageData = nil
-                        selectedPhotoItem = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 18))
-                            .foregroundStyle(.white, .black.opacity(0.5))
+    private var attachmentPreview: some View {
+        if !attachments.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(attachments) { attachment in
+                        attachmentTile(attachment)
                     }
-                    .offset(x: 6, y: -6)
-                    .accessibilityIdentifier("chat_remove_image")
                 }
-
-                Spacer()
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 8)
+            .background(.bar)
+        }
+    }
+
+    private func attachmentTile(_ attachment: FileAttachment) -> some View {
+        ZStack(alignment: .topTrailing) {
+            if attachment.isImage, let uiImage = UIImage(data: attachment.data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 64, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            } else {
+                VStack(spacing: 4) {
+                    Image(systemName: attachment.iconName)
+                        .font(.system(size: 20))
+                        .foregroundStyle(theme.accent)
+                    Text(attachment.filename)
+                        .font(.system(size: 8, weight: .medium))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.primary)
+                    Text(attachment.formattedSize)
+                        .font(.system(size: 7))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: 64, height: 64)
+                .background(Color(.tertiarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
+            if attachment.isUploading {
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .frame(width: 64, height: 64)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
+            if attachment.uploadFailed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.red)
+                    .offset(x: 4, y: -4)
+            }
+
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    attachments.removeAll { $0.id == attachment.id }
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white, .black.opacity(0.5))
+            }
+            .offset(x: 6, y: -6)
         }
     }
 
@@ -206,14 +267,25 @@ struct TaskChatView: View {
 
             HStack(alignment: .bottom, spacing: 10) {
                 HStack(spacing: 8) {
-                    PhotosPicker(
-                        selection: $selectedPhotoItem,
-                        matching: .images,
-                        photoLibrary: .shared()
-                    ) {
+                    Menu {
+                        PhotosPicker(
+                            selection: $selectedPhotoItems,
+                            maxSelectionCount: 5,
+                            matching: .images,
+                            photoLibrary: .shared()
+                        ) {
+                            Label("Photo Library", systemImage: "photo.on.rectangle")
+                        }
+
+                        Button {
+                            showDocumentPicker = true
+                        } label: {
+                            Label("Choose File", systemImage: "doc")
+                        }
+                    } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.system(size: 20))
-                            .foregroundStyle(selectedImageData != nil ? theme.accent : .secondary.opacity(0.5))
+                            .foregroundStyle(!attachments.isEmpty ? theme.accent : .secondary.opacity(0.5))
                     }
                     .accessibilityIdentifier("chat_attach")
 
@@ -270,38 +342,125 @@ struct TaskChatView: View {
 
     private var canSend: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasImage = selectedImageData != nil
-        return (hasText || hasImage) && !isSending
+        let hasAttachments = !attachments.isEmpty
+        return (hasText || hasAttachments) && !isSending && !isUploading
     }
+
+    // MARK: - Actions
 
     private func sendTask() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || selectedImageData != nil else { return }
+        guard !text.isEmpty || !attachments.isEmpty else { return }
 
-        let input = text.isEmpty ? "[Image attached]" : text
-        let imageToSend = selectedImageData
+        let filesToUpload = attachments
+        let input = text.isEmpty ? "[Files attached: \(filesToUpload.map(\.filename).joined(separator: ", "))]" : text
 
         inputText = ""
-        selectedImageData = nil
-        selectedPhotoItem = nil
         isSending = true
+        isUploading = !filesToUpload.isEmpty
 
         Task {
+            var uploadedIds: [String] = []
+
+            for i in filesToUpload.indices {
+                let attachment = filesToUpload[i]
+                if let idx = attachments.firstIndex(where: { $0.id == attachment.id }) {
+                    attachments[idx].isUploading = true
+                }
+
+                do {
+                    let response = try await APIClient.shared.uploadFile(
+                        data: attachment.data,
+                        filename: attachment.filename,
+                        mimeType: attachment.mimeType
+                    )
+                    uploadedIds.append(response.fileId)
+
+                    if let idx = attachments.firstIndex(where: { $0.id == attachment.id }) {
+                        attachments[idx].uploadedFileId = response.fileId
+                        attachments[idx].isUploading = false
+                    }
+                } catch {
+                    if let idx = attachments.firstIndex(where: { $0.id == attachment.id }) {
+                        attachments[idx].isUploading = false
+                        attachments[idx].uploadFailed = true
+                    }
+                }
+            }
+
+            isUploading = false
+            attachments.removeAll()
+            selectedPhotoItems.removeAll()
+
             _ = try? await taskService.submitTask(
                 agentId: agent.id,
                 input: input,
-                imageData: imageToSend,
-                webSearch: webSearchEnabled
+                webSearch: webSearchEnabled,
+                fileIds: uploadedIds.isEmpty ? nil : uploadedIds
             )
             isSending = false
         }
     }
 
-    private func loadImage(from item: PhotosPickerItem?) {
-        guard let item else { return }
-        Task {
-            if let data = try? await item.loadTransferable(type: Data.self) {
-                selectedImageData = data
+    @State private var fileSizeError: String?
+
+    private func loadPhotos(from items: [PhotosPickerItem]) {
+        for item in items {
+            let attachmentId = item.itemIdentifier ?? UUID().uuidString
+            guard !attachments.contains(where: { $0.id == attachmentId }) else { continue }
+
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+
+                let jpegData: Data
+                if let uiImage = UIImage(data: data),
+                   let converted = uiImage.jpegData(compressionQuality: 0.85) {
+                    jpegData = converted
+                } else {
+                    jpegData = data
+                }
+
+                if jpegData.count > maxFileSize {
+                    fileSizeError = "Image is too large (max 25 MB)"
+                    return
+                }
+
+                let filename = "photo_\(attachmentId.suffix(6)).jpg"
+
+                let attachment = FileAttachment(
+                    id: attachmentId,
+                    filename: filename,
+                    mimeType: "image/jpeg",
+                    data: jpegData
+                )
+                withAnimation(.easeOut(duration: 0.2)) {
+                    attachments.append(attachment)
+                }
+            }
+        }
+    }
+
+    private func handlePickedDocuments(_ urls: [URL]) {
+        for url in urls {
+            guard url.startAccessingSecurityScopedResource() else { continue }
+            defer { url.stopAccessingSecurityScopedResource() }
+
+            guard let data = try? Data(contentsOf: url) else { continue }
+
+            if data.count > maxFileSize {
+                fileSizeError = "\(url.lastPathComponent) is too large (max 25 MB)"
+                continue
+            }
+
+            let mimeType = FileAttachment.mimeType(for: url)
+            let attachment = FileAttachment(
+                id: UUID().uuidString,
+                filename: url.lastPathComponent,
+                mimeType: mimeType,
+                data: data
+            )
+            withAnimation(.easeOut(duration: 0.2)) {
+                attachments.append(attachment)
             }
         }
     }

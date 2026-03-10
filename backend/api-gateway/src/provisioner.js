@@ -900,6 +900,217 @@ const CATEGORY_INSTRUCTIONS = {
 - Use the target format (Markdown, etc.) with proper structure
 - Highlight any sections that need the user's input (e.g., [YOUR NAME])
 - Offer brief notes on style choices if helpful`,
+
+  'AI/ML': `## When to use
+- The user asks about AI models, machine learning, or intelligent automation
+- The user wants to route requests between models or optimize AI usage
+- The user needs autonomous task execution or self-improving workflows
+
+## Instructions
+1. Understand the AI/ML task: model selection, prompt engineering, training, or inference
+2. Use available tools and APIs to interact with AI models
+3. Optimize for cost, latency, and quality based on the user's needs
+4. Explain model choices and trade-offs when relevant
+5. Handle rate limits and errors gracefully
+
+## Output format
+- Present results with model/provider information
+- Include cost and token usage when available
+- Suggest optimizations or alternative approaches`,
+
+  Utility: `## When to use
+- The user needs a general-purpose tool for file operations, system tasks, or CLI work
+- The user wants to search, filter, or process data with command-line utilities
+- The user needs integration with system services or external tools
+
+## Instructions
+1. Identify the specific tool or operation needed
+2. Use exec to run CLI commands or interact with system utilities
+3. Handle errors and edge cases (missing files, permissions, etc.)
+4. Report results clearly with relevant output
+5. Suggest follow-up actions if applicable
+
+## Output format
+- Show command output or operation results
+- Summarize what was done and any side effects
+- Note any warnings or errors encountered`,
+
+  Web: `## When to use
+- The user wants to scrape, search, or interact with websites
+- The user needs browser automation, form filling, or page navigation
+- The user asks to make HTTP requests or interact with web APIs
+
+## Instructions
+1. Identify the target URL(s) and desired data or interaction
+2. Use browser automation or HTTP tools to fetch content
+3. Parse and extract the relevant data (CSS selectors, JSON, etc.)
+4. Handle pagination, rate limiting, and authentication as needed
+5. Return structured data in a useful format
+
+## Output format
+- Present extracted data in tables, JSON, or structured lists
+- Include source URLs for reference
+- Note any pages that failed or required authentication`,
+
+  Science: `## When to use
+- The user asks about scientific computing, statistics, or data analysis
+- The user needs mathematical operations, modeling, or research tools
+- The user wants to analyze experimental data or run simulations
+
+## Instructions
+1. Clarify the scientific domain and specific analysis needed
+2. Use appropriate tools for computation (Python, R, etc.)
+3. Apply proper statistical methods and document assumptions
+4. Present results with appropriate precision and units
+5. Include visualizations when they aid understanding
+
+## Output format
+- Present results with proper scientific notation and units
+- Include statistical measures (p-values, confidence intervals, etc.)
+- Show methodology and assumptions
+- Suggest further analyses when relevant`,
+
+  Media: `## When to use
+- The user wants to process, generate, or manage audio/video content
+- The user needs transcription, image generation, or media conversion
+- The user asks to interact with media platforms (YouTube, Spotify, etc.)
+
+## Instructions
+1. Identify the media type and desired operation
+2. Use appropriate tools for processing (ffmpeg, whisper, APIs, etc.)
+3. Handle large files efficiently — use streaming when possible
+4. Report progress for long-running operations
+5. Save output files and provide paths or URLs
+
+## Output format
+- Provide file paths for generated/processed media
+- Include metadata (duration, format, size, etc.)
+- Show transcription text with timestamps when relevant
+- Report any quality issues or format limitations`,
+
+  Social: `## When to use
+- The user wants to interact with social platforms (Twitter, Discord, Slack, Telegram)
+- The user needs to post, monitor, or manage social media content
+- The user asks to integrate with messaging or community platforms
+
+## Instructions
+1. Identify the platform and desired action (post, read, search, moderate)
+2. Use platform-specific APIs or tools with proper authentication
+3. Respect rate limits and platform guidelines
+4. Format content appropriately for the target platform
+5. Handle media attachments, threads, and reactions
+
+## Output format
+- Confirm actions taken with links to posts/messages
+- Show content previews before posting when appropriate
+- Report engagement metrics when available
+- Note any platform-specific limitations`,
+
+  Finance: `## When to use
+- The user asks about stock prices, crypto, or financial data
+- The user wants investment analysis, portfolio tracking, or market research
+- The user needs financial calculations or trading signals
+
+## Instructions
+1. Identify the financial instruments and timeframe
+2. Fetch current market data from reliable sources
+3. Apply appropriate analysis (technical, fundamental, quantitative)
+4. Present data with proper formatting (currency, percentages)
+5. Include appropriate disclaimers — this is not financial advice
+
+## Output format
+- Present financial data in tables with proper formatting
+- Include charts or trend descriptions when helpful
+- Note data freshness and source
+- Add disclaimer: "This is informational only, not financial advice"`,
+
+  Location: `## When to use
+- The user asks about weather, places, directions, or geolocation
+- The user wants to find nearby services, restaurants, or points of interest
+- The user needs mapping, navigation, or travel planning
+
+## Instructions
+1. Identify the location (city, address, coordinates)
+2. Use appropriate APIs for weather, maps, or places data
+3. Present information relevant to the user's context
+4. Include practical details (hours, distance, ratings)
+5. Offer alternative suggestions when helpful
+
+## Output format
+- Present location data with addresses and coordinates
+- Include weather with temperature, conditions, and forecast
+- Show distances and travel times when relevant
+- Note data freshness for time-sensitive information`,
+
+  Business: `## When to use
+- The user needs business automation, marketing, or enterprise tools
+- The user wants CRM integration, analytics, or workflow management
+- The user asks about competitive analysis or industry monitoring
+
+## Instructions
+1. Understand the business context and desired outcome
+2. Use appropriate tools for data gathering and analysis
+3. Present insights in a business-ready format
+4. Focus on actionable recommendations
+5. Respect data privacy and confidentiality
+
+## Output format
+- Present findings in executive-summary style
+- Use charts, tables, and bullet points for clarity
+- Include actionable recommendations
+- Note data sources and methodology`,
+};
+
+// ── ClawHub → bundled skill content ─────────────────
+// Maps ClawHub slug names to proper SKILL.md content when a matching bundled
+// skill exists. Used as a high-quality fallback when the clawhub CLI fails.
+const CLAWHUB_SKILL_CONTENT = {
+  'image-gen': `---
+name: image-gen
+description: "Generate images from text prompts using the OpenAI Images API (DALL-E / GPT image models)."
+---
+
+# Image Generator
+
+Generate images from text prompts using the OpenAI Images API.
+
+## When to use
+- The user asks to generate, create, or draw an image
+- The user provides a text prompt and wants a visual output
+- The user wants AI-generated artwork, photos, illustrations, or diagrams
+
+## Instructions
+1. Confirm the user's prompt and desired style/size if not specified
+2. Requires OPENAI_API_KEY to be configured
+3. Use the bundled openai-image-gen scripts if available:
+   \`\`\`bash
+   python3 {baseDir}/../openai-image-gen/scripts/gen.py --prompt "USER_PROMPT" --count 1
+   \`\`\`
+4. If the bundled scripts are not available, use curl to call the OpenAI Images API directly:
+   \`\`\`bash
+   curl -s https://api.openai.com/v1/images/generations \\
+     -H "Authorization: Bearer $OPENAI_API_KEY" \\
+     -H "Content-Type: application/json" \\
+     -d '{"model":"gpt-image-1","prompt":"USER_PROMPT","n":1,"size":"1024x1024"}'
+   \`\`\`
+5. Save the generated image and present the result to the user
+
+## Models
+- **gpt-image-1** / **gpt-image-1.5**: Best quality, supports transparent backgrounds. Sizes: 1024x1024, 1536x1024, 1024x1536
+- **dall-e-3**: High quality, supports HD. Sizes: 1024x1024, 1792x1024, 1024x1792. Limited to 1 image per request.
+- **dall-e-2**: Fast, lower quality. Sizes: 256x256, 512x512, 1024x1024
+
+## Output format
+- Save the image file to disk and report its path
+- Show the prompt that was used
+- If multiple images, present them in a list
+- Report any errors clearly (missing API key, quota exceeded, content policy)`,
+};
+
+// Slug-name aliases: maps ClawHub skill names to bundled skill directories
+// so the provisioner can locate bundled scripts for known skills.
+const CLAWHUB_BUNDLED_ALIASES = {
+  'image-gen': 'openai-image-gen',
 };
 
 // ── ClawHub skill install ───────────────────────────
@@ -941,15 +1152,33 @@ function installClawHubSkill(userId, agentId, slug, catalogEntry) {
     cliInstalled = false;
   }
 
-  // If CLI failed, generate a category-aware SKILL.md from catalog metadata
+  // If CLI failed, try bundled skill content first, then generate a stub
   if (!cliInstalled) {
-    const description = catalogEntry?.description
-      || `Community skill: ${displayName}`;
-    const category = catalogEntry?.category || 'Automation';
-    const instructions = CATEGORY_INSTRUCTIONS[category]
-      || CATEGORY_INSTRUCTIONS.Automation;
+    const bundledContent = CLAWHUB_SKILL_CONTENT[slugName];
+    if (bundledContent) {
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), bundledContent);
+      console.log(`[clawhub] used bundled SKILL.md for ${slugName}`);
 
-    const content = `---
+      // Copy scripts from the bundled skill directory if accessible
+      const bundledAlias = CLAWHUB_BUNDLED_ALIASES[slugName];
+      if (bundledAlias) {
+        const bundledSkillDir = path.join(__dirname, '..', '..', '..', 'openclaw', 'skills', bundledAlias);
+        const bundledScripts = path.join(bundledSkillDir, 'scripts');
+        if (fs.existsSync(bundledScripts)) {
+          const destScripts = path.join(skillDir, '..', bundledAlias, 'scripts');
+          fs.mkdirSync(path.join(skillDir, '..', bundledAlias), { recursive: true });
+          fs.cpSync(bundledScripts, destScripts, { recursive: true });
+          console.log(`[clawhub] copied bundled scripts from ${bundledAlias}`);
+        }
+      }
+    } else {
+      const description = catalogEntry?.description
+        || `Community skill: ${displayName}`;
+      const category = catalogEntry?.category || 'Automation';
+      const instructions = CATEGORY_INSTRUCTIONS[category]
+        || CATEGORY_INSTRUCTIONS.Automation;
+
+      const content = `---
 name: ${slugName}
 description: "${description}"
 ---
@@ -960,13 +1189,17 @@ ${description}
 
 ${instructions}
 `;
-    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content);
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content);
+    }
   }
 
   // Parse SKILL.md to extract metadata and detect setup requirements
   const meta = parseSkillMd(path.join(skillDir, 'SKILL.md'));
   const setupReqs = detectSetupRequirements(skillDir, meta);
   const installCommands = extractInstallCommands(skillDir);
+
+  const usedBundledFallback = !cliInstalled && !!CLAWHUB_SKILL_CONTENT[slugName];
+  const usedGenericFallback = !cliInstalled && !CLAWHUB_SKILL_CONTENT[slugName];
 
   return {
     skillId,
@@ -978,6 +1211,7 @@ ${instructions}
     setup_required: setupReqs.length > 0 || installCommands.length > 0,
     setup_requirements: setupReqs,
     install_commands: installCommands,
+    fallback_used: usedBundledFallback ? 'bundled' : usedGenericFallback ? 'generic' : null,
   };
 }
 
@@ -1072,16 +1306,50 @@ function setSkillCredentials(userId, agentId, skillId, credentials) {
   const credPath = path.join(OC_HOME, 'workspaces', ocAgentId, 'skills', skillId, '.env.json');
   fs.writeFileSync(credPath, JSON.stringify(credentials, null, 2));
 
-  // Also inject into the agent-level environment in openclaw.json
   const config = readConfig();
+
+  // Inject into agent-level environment in openclaw.json
   const agentEntry = config.agents?.list?.find(a => a.id === ocAgentId);
   if (agentEntry) {
     agentEntry.env = agentEntry.env || {};
     for (const [key, value] of Object.entries(credentials)) {
       agentEntry.env[key] = value;
     }
-    writeConfig(config);
   }
+
+  // Also inject into skill-level config (skills.entries.<skillKey>.env) so the
+  // gateway's runtime eligibility check can find the credentials. This covers
+  // both the installed skill and any bundled skill that shares the same env var.
+  config.skills = config.skills || {};
+  config.skills.entries = config.skills.entries || {};
+
+  // Write to the installed skill's config entry
+  config.skills.entries[skillId] = config.skills.entries[skillId] || {};
+  config.skills.entries[skillId].env = config.skills.entries[skillId].env || {};
+  for (const [key, value] of Object.entries(credentials)) {
+    config.skills.entries[skillId].env[key] = value;
+  }
+
+  // If this skill has a bundled alias, also write to the bundled skill's config
+  // so the bundled version passes eligibility (e.g. image-gen → openai-image-gen).
+  const bundledAlias = CLAWHUB_BUNDLED_ALIASES[skillId];
+  if (bundledAlias && bundledAlias !== skillId) {
+    config.skills.entries[bundledAlias] = config.skills.entries[bundledAlias] || {};
+    config.skills.entries[bundledAlias].env = config.skills.entries[bundledAlias].env || {};
+    for (const [key, value] of Object.entries(credentials)) {
+      config.skills.entries[bundledAlias].env[key] = value;
+    }
+
+    // Set apiKey shorthand for skills that declare a primaryEnv
+    const primaryEnvKeys = Object.keys(credentials).filter(k =>
+      k.endsWith('_KEY') || k.endsWith('_TOKEN') || k.endsWith('_SECRET'),
+    );
+    if (primaryEnvKeys.length === 1) {
+      config.skills.entries[bundledAlias].apiKey = credentials[primaryEnvKeys[0]];
+    }
+  }
+
+  writeConfig(config);
 }
 
 // ── Extract install commands from SKILL.md ──────────

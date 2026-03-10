@@ -22,7 +22,8 @@ final class TaskService {
         agentId: String,
         input: String,
         imageData: Data? = nil,
-        webSearch: Bool = false
+        webSearch: Bool = false,
+        fileIds: [String]? = nil
     ) async throws -> TaskSubmitResponse {
         var request = TaskSubmitRequest(input: input)
         if let imageData {
@@ -30,6 +31,9 @@ final class TaskService {
         }
         if webSearch {
             request.webSearch = true
+        }
+        if let fileIds, !fileIds.isEmpty {
+            request.fileIds = fileIds
         }
 
         let response: TaskSubmitResponse = try await APIClient.shared.post(
@@ -45,7 +49,8 @@ final class TaskService {
             status: response.status,
             createdAt: Date(),
             completedAt: nil,
-            tokensUsed: nil
+            tokensUsed: nil,
+            fileIds: fileIds
         )
         tasks.insert(newTask, at: 0)
         return response

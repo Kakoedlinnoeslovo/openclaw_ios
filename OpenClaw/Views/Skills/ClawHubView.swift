@@ -16,6 +16,7 @@ struct ClawHubView: View {
     @State private var installState: InstallState = .idle
     @State private var installingSlug: String?
     @State private var installError: String?
+    @State private var installWarning: String?
     @State private var setupRequirements: [SkillSetupRequirement] = []
     @State private var showAgentPicker = false
     @State private var pendingSkill: Skill?
@@ -209,10 +210,12 @@ struct ClawHubView: View {
         installState = .installing
         installingSlug = slug
         installError = nil
+        installWarning = nil
 
         Task {
             do {
                 let result = try await agentService.installClawHubSkill(agentId: agentId, slug: slug)
+                installWarning = result.installWarning
                 if result.setupRequired == true, let reqs = result.setupRequirements, !reqs.isEmpty {
                     setupRequirements = reqs
                     installState = .needsSetup
@@ -314,6 +317,12 @@ struct ClawHubView: View {
                                 .foregroundStyle(.green)
                             Text("Skill installed!")
                                 .font(.headline)
+                            if let warning = installWarning {
+                                Text(warning)
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                    .multilineTextAlignment(.center)
+                            }
                         }
                     case .needsSetup:
                         VStack(spacing: 12) {
@@ -371,6 +380,7 @@ struct ClawHubView: View {
                         withAnimation {
                             installState = .idle
                             installError = nil
+                            installWarning = nil
                             setupRequirements = []
                         }
                     } label: {
