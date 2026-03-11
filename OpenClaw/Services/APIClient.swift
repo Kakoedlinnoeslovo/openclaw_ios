@@ -6,7 +6,8 @@ enum APIError: LocalizedError {
     case forbidden
     case notFound
     case rateLimited
-    case serverError(Int)
+    case serverError(Int, String?)
+    case clientError(Int, String?)
     case decodingError(Error)
     case networkError(Error)
     case unknown
@@ -18,7 +19,10 @@ enum APIError: LocalizedError {
         case .forbidden: return "Upgrade your plan to access this feature"
         case .notFound: return "Resource not found"
         case .rateLimited: return "You've reached your daily limit"
-        case .serverError(let code): return "Server error (\(code))"
+        case .serverError(let code, let message):
+            return message ?? "Server error (\(code))"
+        case .clientError(_, let message):
+            return message ?? "Something went wrong"
         case .decodingError: return "Unexpected response format"
         case .networkError: return "No internet connection"
         case .unknown: return "Something went wrong"
@@ -33,11 +37,13 @@ actor APIClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    private var isRefreshingToken = false
 
     private init() {
         self.baseURL = AppConstants.apiBaseURL
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         self.session = URLSession(configuration: config)
 
         self.decoder = JSONDecoder()
@@ -52,7 +58,8 @@ actor APIClient {
         _ method: String,
         path: String,
         body: (any Encodable)? = nil,
-        authenticated: Bool = true
+        authenticated: Bool = true,
+        allowRetry: Bool = true
     ) async throws -> T {
         guard let url = URL(string: baseURL + path) else {
             throw APIError.invalidURL
@@ -89,6 +96,9 @@ actor APIClient {
                 throw APIError.decodingError(error)
             }
         case 401:
+            if authenticated && allowRetry && !isRefreshingToken && !path.contains("/auth/") {
+                return try await refreshAndRetry(method, path: path, body: body)
+            }
             throw APIError.unauthorized
         case 403:
             throw APIError.forbidden
@@ -96,11 +106,39 @@ actor APIClient {
             throw APIError.notFound
         case 429:
             throw APIError.rateLimited
+        case 400...499:
+            let message = Self.extractErrorMessage(from: data)
+            throw APIError.clientError(httpResponse.statusCode, message)
         case 500...599:
-            throw APIError.serverError(httpResponse.statusCode)
+            let message = Self.extractErrorMessage(from: data)
+            throw APIError.serverError(httpResponse.statusCode, message)
         default:
             throw APIError.unknown
         }
+    }
+
+    private func refreshAndRetry<T: Decodable>(
+        _ method: String,
+        path: String,
+        body: (any Encodable)? = nil
+    ) async throws -> T {
+        isRefreshingToken = true
+        defer { isRefreshingToken = false }
+
+        guard let refreshToken = Keychain.loadString(forKey: AppConstants.refreshTokenKey) else {
+            throw APIError.unauthorized
+        }
+
+        let tokens: AuthTokens = try await request(
+            "POST", path: "/auth/refresh",
+            body: RefreshBody(refreshToken: refreshToken),
+            authenticated: false,
+            allowRetry: false
+        )
+        Keychain.saveString(tokens.accessToken, forKey: AppConstants.accessTokenKey)
+        Keychain.saveString(tokens.refreshToken, forKey: AppConstants.refreshTokenKey)
+
+        return try await request(method, path: path, body: body, allowRetry: false)
     }
 
     func get<T: Decodable>(_ path: String) async throws -> T {
@@ -166,8 +204,8 @@ actor APIClient {
         guard (200...299).contains(httpResponse.statusCode) else {
             switch httpResponse.statusCode {
             case 401: throw APIError.unauthorized
-            case 413: throw APIError.serverError(413)
-            default: throw APIError.serverError(httpResponse.statusCode)
+            case 413: throw APIError.serverError(413, nil)
+            default: throw APIError.serverError(httpResponse.statusCode, nil)
             }
         }
 
@@ -209,6 +247,12 @@ actor APIClient {
         return (data, filename, contentType)
     }
 
+    private static func extractErrorMessage(from data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = json["error"] as? String else { return nil }
+        return error
+    }
+
     private static func extractFilename(from disposition: String) -> String {
         if let range = disposition.range(of: "filename=\""),
            let end = disposition[range.upperBound...].range(of: "\"") {
@@ -231,6 +275,7 @@ struct HealthStatus: Decodable {
     var isHealthy: Bool { status == "ok" }
 }
 
+private struct RefreshBody: Codable { let refreshToken: String }
 private struct EmptyResponse: Decodable {}
 
 extension Data {

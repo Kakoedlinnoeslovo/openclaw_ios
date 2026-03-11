@@ -5,8 +5,8 @@ enum AppConstants {
     static let apiBaseURL = "https://openclow.ngrok-free.app"
     static let wsBaseURL = "wss://openclow.ngrok-free.app/ws"
     #else
-    static let apiBaseURL = "https://api.your-openclaw-server.com"
-    static let wsBaseURL = "wss://api.your-openclaw-server.com/ws"
+    static let apiBaseURL = "https://openclow.ngrok-free.app"
+    static let wsBaseURL = "wss://openclow.ngrok-free.app/ws"
     #endif
 
     static let appStoreID = "6743122046"

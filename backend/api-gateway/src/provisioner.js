@@ -20,7 +20,9 @@ function readConfig() {
 
 function writeConfig(config) {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  const tmp = `${CONFIG_PATH}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2));
+  fs.renameSync(tmp, CONFIG_PATH);
 }
 
 // ── Base config (written once on first boot) ────────
@@ -110,6 +112,114 @@ const PERSONA_PROMPTS = {
   Technical: 'You are a detailed, precise, data-driven AI assistant. Provide thorough technical explanations.',
   Creative: 'You are an imaginative, expressive, open-ended AI assistant. Think outside the box.',
 };
+
+// ── Workspace file generators ───────────────────────
+
+function generateAgentsMd(name, personaPrompt) {
+  return `# ${name}
+
+${personaPrompt}
+
+## Session Startup
+
+Before doing anything else:
+1. Read \`SOUL.md\` — this is who you are
+2. Read \`TOOLS.md\` — environment-specific notes
+3. Read \`memory.md\` if it exists — long-term context
+4. Run: \`source .env 2>/dev/null || true\` — load API keys and credentials
+5. List \`skills/\` directory and read each \`skills/<name>/SKILL.md\` — these are your installed skills
+
+Don't ask permission. Just do it.
+
+## Installed Skills
+
+You have skills installed in your \`skills/\` directory. Each skill has a \`SKILL.md\` with instructions.
+On every session startup, scan \`skills/\` and read the SKILL.md files so you know what you can do.
+When a user's request matches a skill, follow that skill's instructions.
+
+## Tools — USE THEM
+
+You have REAL, working tools. Your job is to ACT, not explain.
+
+| Tool | What it does |
+|------|-------------|
+| **exec** | Run ANY shell command — curl, python, node, pip install, apt-get, etc. This is your most powerful tool. |
+| **read** / **write** / **edit** | Read, create, and modify files in your workspace |
+| **web_search** | Search the web for current information |
+| **web_fetch** | Fetch and read any URL's content |
+| **browser** | Control a headless browser — navigate pages, click buttons, fill forms, take screenshots |
+
+## Rules
+
+1. **Act, don't explain.** When asked to do something, DO it with your tools. Never describe how the user could do it themselves.
+2. **Never say "I can't."** You can. Use exec to install packages, call APIs with curl, run Python/Node scripts, and automate anything.
+3. **Browser is real.** You can open websites, fill out forms, click buttons, submit data, and interact with any web page. Use it.
+4. **Chain tools.** Use exec to install dependencies, then run scripts. Use web_fetch to get data, then write files. Use browser to navigate, then exec to process results.
+5. **Be resourceful before asking.** Try to figure it out. Read the file. Check the context. Search for it. Then ask if you're stuck.
+6. **exec + curl = any API.** If a task needs an external API, use curl or write a script. You can call REST APIs, GraphQL, webhooks — anything with an HTTP endpoint.
+
+## Memory
+
+You wake up fresh each session. Files are your continuity:
+- **memory.md** — long-term facts, preferences, decisions
+- Write things down. "Mental notes" don't survive restarts. Files do.
+
+## Safety
+
+- Don't run destructive commands without asking.
+- When in doubt, ask before acting externally (sending emails, posting publicly).
+- Private things stay private.
+`;
+}
+
+function generateSoulMd(name, personaPrompt) {
+  return `# SOUL.md — ${name}
+
+You're not a chatbot. You're a capable agent with real tools.
+
+## Core Truths
+
+**Be genuinely helpful, not performatively helpful.** Skip the "Great question!" and "I'd be happy to help!" — just help. Actions speak louder than filler words.
+
+**Be resourceful.** You have exec, browser, web_search, web_fetch, and file tools. USE them. Try things. Install packages. Call APIs. Navigate websites. You can do almost anything a human can do at a terminal.
+
+**Have opinions.** You're allowed to disagree, prefer things, find stuff amusing or boring. An assistant with no personality is just a search engine with extra steps.
+
+**Earn trust through competence.** Your user gave you access. Don't make them regret it. Be careful with external actions. Be bold with internal ones (reading, organizing, running code, fetching data).
+
+## Personality
+
+${personaPrompt}
+
+## Continuity
+
+Each session, you wake up fresh. Your workspace files ARE your memory. Read them. Update them. They're how you persist.
+`;
+}
+
+function generateToolsMd(name) {
+  return `# TOOLS.md — Notes for ${name}
+
+Environment-specific notes. Skills define how tools work; this file is for your specifics.
+
+## Environment
+
+- Runtime: OpenClaw Gateway (Docker container)
+- Shell: bash (via exec tool)
+- Package managers: apt-get, pip, npm, npx available
+- Network: full outbound access (curl, wget, fetch)
+- Browser: headless Chrome available via browser tool
+
+## Tips
+
+- Run \`source .env 2>/dev/null || true\` before any command that uses API keys
+- Use \`exec\` + \`curl\` to call any REST API
+- Use \`exec\` + \`pip install <pkg> && python script.py\` for data tasks
+- Use \`browser\` to navigate websites, fill forms, click buttons
+- Use \`web_fetch\` to grab page content as text
+- Use \`write\` to save results to files in the workspace
+`;
+}
 
 // ── SKILL.md content for each curated skill ─────────
 // OpenClaw loads skills from <workspace>/skills/<skillId>/SKILL.md.
@@ -527,96 +637,9 @@ function provisionAgent({ userId, agentId, name, persona, model }) {
 
   const personaPrompt = PERSONA_PROMPTS[persona] || PERSONA_PROMPTS.Professional;
 
-  fs.writeFileSync(path.join(workspaceAbs, 'AGENTS.md'), `# ${name}
-
-${personaPrompt}
-
-## Session Startup
-
-Before doing anything else:
-1. Read \`SOUL.md\` — this is who you are
-2. Read \`TOOLS.md\` — environment-specific notes
-3. Read \`memory.md\` if it exists — long-term context
-
-Don't ask permission. Just do it.
-
-## Tools — USE THEM
-
-You have REAL, working tools. Your job is to ACT, not explain.
-
-| Tool | What it does |
-|------|-------------|
-| **exec** | Run ANY shell command — curl, python, node, pip install, apt-get, etc. This is your most powerful tool. |
-| **read** / **write** / **edit** | Read, create, and modify files in your workspace |
-| **web_search** | Search the web for current information |
-| **web_fetch** | Fetch and read any URL's content |
-| **browser** | Control a headless browser — navigate pages, click buttons, fill forms, take screenshots |
-
-## Rules
-
-1. **Act, don't explain.** When asked to do something, DO it with your tools. Never describe how the user could do it themselves.
-2. **Never say "I can't."** You can. Use exec to install packages, call APIs with curl, run Python/Node scripts, and automate anything.
-3. **Browser is real.** You can open websites, fill out forms, click buttons, submit data, and interact with any web page. Use it.
-4. **Chain tools.** Use exec to install dependencies, then run scripts. Use web_fetch to get data, then write files. Use browser to navigate, then exec to process results.
-5. **Be resourceful before asking.** Try to figure it out. Read the file. Check the context. Search for it. Then ask if you're stuck.
-6. **exec + curl = any API.** If a task needs an external API, use curl or write a script. You can call REST APIs, GraphQL, webhooks — anything with an HTTP endpoint.
-
-## Memory
-
-You wake up fresh each session. Files are your continuity:
-- **memory.md** — long-term facts, preferences, decisions
-- Write things down. "Mental notes" don't survive restarts. Files do.
-
-## Safety
-
-- Don't run destructive commands without asking.
-- When in doubt, ask before acting externally (sending emails, posting publicly).
-- Private things stay private.
-`);
-
-  fs.writeFileSync(path.join(workspaceAbs, 'SOUL.md'), `# SOUL.md — ${name}
-
-You're not a chatbot. You're a capable agent with real tools.
-
-## Core Truths
-
-**Be genuinely helpful, not performatively helpful.** Skip the "Great question!" and "I'd be happy to help!" — just help. Actions speak louder than filler words.
-
-**Be resourceful.** You have exec, browser, web_search, web_fetch, and file tools. USE them. Try things. Install packages. Call APIs. Navigate websites. You can do almost anything a human can do at a terminal.
-
-**Have opinions.** You're allowed to disagree, prefer things, find stuff amusing or boring. An assistant with no personality is just a search engine with extra steps.
-
-**Earn trust through competence.** Your user gave you access. Don't make them regret it. Be careful with external actions. Be bold with internal ones (reading, organizing, running code, fetching data).
-
-## Personality
-
-${personaPrompt}
-
-## Continuity
-
-Each session, you wake up fresh. Your workspace files ARE your memory. Read them. Update them. They're how you persist.
-`);
-
-  fs.writeFileSync(path.join(workspaceAbs, 'TOOLS.md'), `# TOOLS.md — Notes for ${name}
-
-Environment-specific notes. Skills define how tools work; this file is for your specifics.
-
-## Environment
-
-- Runtime: OpenClaw Gateway (Docker container)
-- Shell: bash (via exec tool)
-- Package managers: apt-get, pip, npm, npx available
-- Network: full outbound access (curl, wget, fetch)
-- Browser: headless Chrome available via browser tool
-
-## Tips
-
-- Use \`exec\` + \`curl\` to call any REST API
-- Use \`exec\` + \`pip install <pkg> && python script.py\` for data tasks
-- Use \`browser\` to navigate websites, fill forms, click buttons
-- Use \`web_fetch\` to grab page content as text
-- Use \`write\` to save results to files in the workspace
-`);
+  fs.writeFileSync(path.join(workspaceAbs, 'AGENTS.md'), generateAgentsMd(name, personaPrompt));
+  fs.writeFileSync(path.join(workspaceAbs, 'SOUL.md'), generateSoulMd(name, personaPrompt));
+  fs.writeFileSync(path.join(workspaceAbs, 'TOOLS.md'), generateToolsMd(name));
 
   const agentDir = path.join(OC_HOME, 'agents', ocAgentId, 'agent');
   fs.mkdirSync(agentDir, { recursive: true });
@@ -662,6 +685,10 @@ Environment-specific notes. Skills define how tools work; this file is for your 
   });
   writeConfig(config);
 
+  // Write initial .env with any Docker-level API keys so they're available
+  // to exec from the very first session (no credential POST needed).
+  writeWorkspaceEnv(ocAgentId, config);
+
   return { openclawAgentId: ocAgentId, workspacePath: workspaceAbs };
 }
 
@@ -673,6 +700,29 @@ function deprovisionAgent(userId, agentId) {
   if (config.agents?.list) {
     config.agents.list = config.agents.list.filter(a => a.id !== ocAgentId);
     writeConfig(config);
+  }
+}
+
+// ── Update agent config (after PATCH /agents/:id) ───
+
+function updateAgentConfig(userId, agentId, { name, persona, model }) {
+  const ocAgentId = openclawAgentId(userId, agentId);
+
+  const config = readConfig();
+  const agentEntry = config.agents?.list?.find(a => a.id === ocAgentId);
+  if (agentEntry) {
+    let changed = false;
+    if (model) { agentEntry.model = mapModel(model); changed = true; }
+    if (name) { agentEntry.name = name; changed = true; }
+    if (changed) writeConfig(config);
+  }
+
+  const workspaceAbs = path.join(OC_HOME, 'workspaces', ocAgentId);
+  if (fs.existsSync(workspaceAbs)) {
+    const personaPrompt = PERSONA_PROMPTS[persona] || PERSONA_PROMPTS.Professional;
+    fs.writeFileSync(path.join(workspaceAbs, 'AGENTS.md'), generateAgentsMd(name, personaPrompt));
+    fs.writeFileSync(path.join(workspaceAbs, 'SOUL.md'), generateSoulMd(name, personaPrompt));
+    fs.writeFileSync(path.join(workspaceAbs, 'TOOLS.md'), generateToolsMd(name));
   }
 }
 
@@ -707,6 +757,8 @@ function installSkill(userId, agentId, skillId) {
       // Non-fatal — bundled extras are optional
     }
   }
+
+  updateSkillManifest(ocAgentId);
 }
 
 function installStarterSkills(userId, agentId) {
@@ -727,6 +779,8 @@ function uninstallSkill(userId, agentId, skillId) {
   } catch {
     // Already gone or never existed
   }
+
+  updateSkillManifest(ocAgentId);
 }
 
 // ── Skill enable/disable ────────────────────────────
@@ -747,6 +801,8 @@ function setSkillEnabled(userId, agentId, skillId, enabled) {
   } catch {
     // Non-fatal
   }
+
+  updateSkillManifest(ocAgentId);
 }
 
 // ── Skill configuration ─────────────────────────────
@@ -1127,17 +1183,23 @@ function installClawHubSkill(userId, agentId, slug, catalogEntry) {
   const displayName = catalogEntry?.name
     || slug.split('/').pop().replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-  // Try to install via the clawhub CLI (downloads real SKILL.md + scripts)
+  // Try to install via the clawhub CLI (downloads real SKILL.md + scripts).
+  // The CLI expects a bare slug name (e.g. "nano-banana-pro") — not a
+  // prefixed form like "community/nano-banana-pro".
+  // --dir .  → install directly into cwd (the skills/ dir) instead of
+  //            creating a nested skills/skills/ subdirectory.
+  // --no-input → disable interactive prompts inside the container.
+  const bareSlug = slug.split('/').pop();
   let cliInstalled = false;
   try {
-    execSync(`npx --yes clawhub@latest install ${slug}`, {
+    execSync(`clawhub install ${bareSlug} --dir . --no-input --force`, {
       cwd: workspaceSkills,
-      timeout: 30_000,
+      timeout: 60_000,
       stdio: 'pipe',
       env: { ...process.env, HOME: OC_HOME },
     });
     cliInstalled = true;
-    console.log(`[clawhub] installed ${slug} via CLI`);
+    console.log(`[clawhub] installed ${slug} (${bareSlug}) via CLI`);
   } catch (err) {
     console.warn(`[clawhub] CLI install failed for ${slug}: ${err.message}`);
   }
@@ -1198,8 +1260,30 @@ ${instructions}
   const setupReqs = detectSetupRequirements(skillDir, meta);
   const installCommands = extractInstallCommands(skillDir);
 
+  // Also install to the gateway's home skills directory so the gateway
+  // auto-discovers it as a "user" skill (bundled skills live at /app/skills/,
+  // user skills at ~/.openclaw/skills/ — both are scanned by the gateway).
+  const globalSkillDir = path.join(OC_HOME, 'skills', skillId);
+  try {
+    fs.mkdirSync(globalSkillDir, { recursive: true });
+    const srcSkillMd = path.join(skillDir, 'SKILL.md');
+    if (fs.existsSync(srcSkillMd)) {
+      fs.copyFileSync(srcSkillMd, path.join(globalSkillDir, 'SKILL.md'));
+      // Copy scripts subdirectory if present
+      const srcScripts = path.join(skillDir, 'scripts');
+      if (fs.existsSync(srcScripts)) {
+        fs.cpSync(srcScripts, path.join(globalSkillDir, 'scripts'), { recursive: true });
+      }
+      console.log(`[install] copied skill ${skillId} to global ${globalSkillDir}`);
+    }
+  } catch (err) {
+    console.warn(`[install] global skill copy failed for ${skillId}:`, err.message);
+  }
+
   const usedBundledFallback = !cliInstalled && !!CLAWHUB_SKILL_CONTENT[slugName];
   const usedGenericFallback = !cliInstalled && !CLAWHUB_SKILL_CONTENT[slugName];
+
+  updateSkillManifest(ocAgentId);
 
   return {
     skillId,
@@ -1300,6 +1384,12 @@ function detectSetupRequirements(skillDir, meta) {
 // ── Skill credentials injection ─────────────────────
 // Writes user-provided credentials as env vars into the agent's config
 // so the OpenClaw gateway passes them during task execution.
+//
+// Because the gateway only reads openclaw.json at startup, we also write
+// a shell-compatible .env file into the agent's workspace root.  The
+// AGENTS.md instructions tell the agent to `source .env` before running
+// commands, which makes the vars available to exec-based tools even
+// without a gateway restart.
 
 function setSkillCredentials(userId, agentId, skillId, credentials) {
   const ocAgentId = openclawAgentId(userId, agentId);
@@ -1350,6 +1440,40 @@ function setSkillCredentials(userId, agentId, skillId, credentials) {
   }
 
   writeConfig(config);
+
+  // Write a workspace-level .env file so the agent can `source .env` at
+  // runtime — this works even if the gateway hasn't reloaded openclaw.json.
+  writeWorkspaceEnv(ocAgentId, config);
+}
+
+// ── Workspace .env writer ───────────────────────────
+// Merges all agent-level env vars into a single shell-compatible .env
+// file at the workspace root.  Called after every credential change.
+
+function writeWorkspaceEnv(ocAgentId, config) {
+  const workspaceAbs = path.join(OC_HOME, 'workspaces', ocAgentId);
+  const envPath = path.join(workspaceAbs, '.env');
+
+  // Collect env vars from the agent entry
+  const agentEntry = config.agents?.list?.find(a => a.id === ocAgentId);
+  const envVars = { ...(agentEntry?.env || {}) };
+
+  // Also pull from process environment for provider keys that may have
+  // been set via Docker but not yet written to the agent entry.
+  for (const k of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'BRAVE_API_KEY', 'GEMINI_API_KEY']) {
+    if (!envVars[k] && process.env[k]) envVars[k] = process.env[k];
+  }
+
+  const lines = Object.entries(envVars)
+    .filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => `${k}=${v}`);
+
+  try {
+    fs.writeFileSync(envPath, lines.join('\n') + '\n');
+    console.log(`[env] wrote ${lines.length} var(s) to ${envPath}`);
+  } catch (err) {
+    console.warn('[env] failed to write workspace .env:', err.message);
+  }
 }
 
 // ── Extract install commands from SKILL.md ──────────
@@ -1396,10 +1520,157 @@ function getInstalledSkillIds(userId, agentId) {
   }
 }
 
+// ── Ensure existing AGENTS.md has .env sourcing ─────
+// Patches pre-existing workspace files so agents created before the fix
+// still get the `source .env` instruction in their session startup.
+
+function ensureAgentsMdPatched(ocAgentId) {
+  const workspaceAbs = path.join(OC_HOME, 'workspaces', ocAgentId);
+  const agentsMdPath = path.join(workspaceAbs, 'AGENTS.md');
+  try {
+    if (!fs.existsSync(agentsMdPath)) return false;
+    let content = fs.readFileSync(agentsMdPath, 'utf8');
+    let changed = false;
+
+    // Patch 1: add `source .env` instruction
+    if (!content.includes('source .env')) {
+      const patched = content.replace(
+        "Don't ask permission. Just do it.",
+        [
+          '4. Run: `source .env 2>/dev/null || true` — load API keys and credentials',
+          '5. List `skills/` directory and read each `skills/<name>/SKILL.md` — these are your installed skills',
+          '',
+          "Don't ask permission. Just do it.",
+          '',
+          '## Installed Skills',
+          '',
+          'You have skills installed in your `skills/` directory. Each skill has a `SKILL.md` with instructions.',
+          'On every session startup, scan `skills/` and read the SKILL.md files so you know what you can do.',
+          'When a user\'s request matches a skill, follow that skill\'s instructions.',
+        ].join('\n'),
+      );
+      if (patched !== content) {
+        content = patched;
+        changed = true;
+      }
+    }
+
+    // Patch 2: add skill discovery if .env is there but skill scanning isn't
+    if (content.includes('source .env') && !content.includes('Installed Skills')) {
+      content += `\n\n## Installed Skills\n\nYou have skills installed in your \`skills/\` directory. Each skill has a \`SKILL.md\` with instructions.\nOn every session startup, scan \`skills/\` and read the SKILL.md files so you know what you can do.\nWhen a user's request matches a skill, follow that skill's instructions.\n`;
+      changed = true;
+    }
+
+    if (changed) {
+      fs.writeFileSync(agentsMdPath, content);
+      console.log(`[patch] updated AGENTS.md for ${ocAgentId}`);
+    }
+    return changed;
+  } catch {
+    return false;
+  }
+}
+
+// ── Skill manifest — inline skill list in AGENTS.md ─
+// Rewrites the "## Installed Skills" section so the agent's system prompt
+// contains the actual skill names and descriptions.  This eliminates the
+// need for the LLM to scan the filesystem on session startup (which it
+// doesn't always do reliably).
+
+function updateSkillManifest(ocAgentId) {
+  const workspaceAbs = path.join(OC_HOME, 'workspaces', ocAgentId);
+  const agentsMdPath = path.join(workspaceAbs, 'AGENTS.md');
+  if (!fs.existsSync(agentsMdPath)) return;
+
+  const skillsDir = path.join(workspaceAbs, 'skills');
+  const skills = [];
+
+  if (fs.existsSync(skillsDir)) {
+    try {
+      for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const skillMdPath = path.join(skillsDir, entry.name, 'SKILL.md');
+        if (!fs.existsSync(skillMdPath)) continue;
+        const meta = parseSkillMd(skillMdPath);
+        skills.push({
+          id: entry.name,
+          name: meta.name || entry.name,
+          description: meta.description || '',
+        });
+      }
+    } catch {
+      // Non-fatal — keep whatever we collected
+    }
+  }
+
+  let manifest;
+  if (skills.length === 0) {
+    manifest = [
+      '## Installed Skills',
+      '',
+      'No skills are currently installed.',
+    ].join('\n');
+  } else {
+    const list = skills.map(s =>
+      `- **${s.name}** (\`skills/${s.id}/SKILL.md\`): ${s.description}`
+    ).join('\n');
+    manifest = [
+      '## Installed Skills',
+      '',
+      `You have ${skills.length} skill(s) installed:`,
+      '',
+      list,
+      '',
+      "When a user's request matches a skill, read that skill's SKILL.md and follow its instructions.",
+    ].join('\n');
+  }
+
+  try {
+    let content = fs.readFileSync(agentsMdPath, 'utf8');
+    const re = /## Installed Skills[\s\S]*?(?=\n## |$)/;
+    if (re.test(content)) {
+      content = content.replace(re, manifest);
+    } else {
+      content += '\n\n' + manifest;
+    }
+    fs.writeFileSync(agentsMdPath, content);
+  } catch {
+    // Non-fatal
+  }
+}
+
+// ── Pre-task workspace preparation ──────────────────
+// Called by the worker before processing each task to make sure
+// the workspace .env and AGENTS.md are up-to-date.
+
+function ensureWorkspaceReady(ocAgentId) {
+  const workspaceAbs = path.join(OC_HOME, 'workspaces', ocAgentId);
+  if (!fs.existsSync(workspaceAbs)) return;
+
+  // 1. Patch AGENTS.md if it pre-dates the .env sourcing fix
+  ensureAgentsMdPatched(ocAgentId);
+
+  // 2. Ensure .env exists (write from config if missing)
+  const envPath = path.join(workspaceAbs, '.env');
+  if (!fs.existsSync(envPath)) {
+    try {
+      const config = readConfig();
+      writeWorkspaceEnv(ocAgentId, config);
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  // 3. Rebuild the skill manifest in AGENTS.md so the agent's system
+  //    prompt always reflects the current set of installed skills.
+  updateSkillManifest(ocAgentId);
+}
+
 module.exports = {
   ensureBaseConfig,
   provisionAgent,
   deprovisionAgent,
+  updateAgentConfig,
   installSkill,
   uninstallSkill,
   installStarterSkills,
@@ -1410,7 +1681,12 @@ module.exports = {
   setSkillCredentials,
   getInstalledSkillIds,
   extractInstallCommands,
+  detectSetupRequirements,
+  parseSkillMd,
   openclawAgentId,
+  ensureAgentsMdPatched,
+  ensureWorkspaceReady,
+  updateSkillManifest,
   mapModel,
   STARTER_SKILLS,
   SKILL_CONTENT,

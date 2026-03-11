@@ -1,14 +1,20 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import Speech
 
 struct TaskChatView: View {
     @Environment(AppTheme.self) private var theme
     let agent: Agent
     var initialMessage: String? = nil
 
+    @State private var agentService = AgentService.shared
     @State private var taskService = TaskService.shared
     @State private var webSocket = WebSocketManager.shared
+
+    private var liveAgent: Agent {
+        agentService.agents.first(where: { $0.id == agent.id }) ?? agent
+    }
     @State private var inputText = ""
     @State private var isSending = false
     @State private var hasSentInitial = false
@@ -18,13 +24,19 @@ struct TaskChatView: View {
     @State private var attachments: [FileAttachment] = []
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var showDocumentPicker = false
+    @State private var showPhotoPicker = false
     @State private var isUploading = false
+
+    @State private var speechService = SpeechRecognitionService.shared
+    @State private var showSpeechPermissionDenied = false
+    @State private var configuringSkill: Agent.InstalledSkill?
 
     private let maxFileSize = 25 * 1024 * 1024
 
     var body: some View {
         VStack(spacing: 0) {
             chatMessages
+            unconfiguredSkillsBanner
             attachmentPreview
             chatInputBar
         }
@@ -38,6 +50,16 @@ struct TaskChatView: View {
                 HStack(spacing: 8) {
                     connectionBadge
                     Menu {
+                        if !unconfiguredSkills.isEmpty {
+                            ForEach(unconfiguredSkills) { skill in
+                                Button {
+                                    configuringSkill = skill
+                                } label: {
+                                    Label("Configure \(skill.name)", systemImage: "key.fill")
+                                }
+                            }
+                            Divider()
+                        }
                         Button(role: .destructive) {
                             showClearConfirmation = true
                         } label: {
@@ -70,6 +92,16 @@ struct TaskChatView: View {
         } message: {
             Text(fileSizeError ?? "")
         }
+        .sheet(item: $configuringSkill) { skill in
+            SkillCredentialSheet(agentId: agent.id, skill: skill)
+        }
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $selectedPhotoItems,
+            maxSelectionCount: 5,
+            matching: .images,
+            photoLibrary: .shared()
+        )
         .sheet(isPresented: $showDocumentPicker) {
             DocumentPicker(
                 allowedContentTypes: [.item],
@@ -78,7 +110,10 @@ struct TaskChatView: View {
             )
         }
         .task {
-            try? await taskService.fetchTasks(agentId: agent.id)
+            async let fetchTasks: () = { try? await taskService.fetchTasks(agentId: agent.id) }()
+            async let refreshSkills: () = { try? await agentService.fetchAgents() }()
+            _ = await (fetchTasks, refreshSkills)
+
             webSocket.connect(agentId: agent.id)
 
             if let initialMessage, !hasSentInitial {
@@ -265,15 +300,16 @@ struct TaskChatView: View {
                 .background(theme.accent.opacity(0.06))
             }
 
+            if speechService.isListening {
+                speechListeningBanner
+            }
+
             HStack(alignment: .bottom, spacing: 10) {
                 HStack(spacing: 8) {
                     Menu {
-                        PhotosPicker(
-                            selection: $selectedPhotoItems,
-                            maxSelectionCount: 5,
-                            matching: .images,
-                            photoLibrary: .shared()
-                        ) {
+                        Button {
+                            showPhotoPicker = true
+                        } label: {
                             Label("Photo Library", systemImage: "photo.on.rectangle")
                         }
 
@@ -296,6 +332,16 @@ struct TaskChatView: View {
                         .accessibilityIdentifier("chat_input")
 
                     Button {
+                        toggleSpeechRecognition()
+                    } label: {
+                        Image(systemName: speechService.isListening ? "mic.fill" : "mic")
+                            .font(.system(size: 17))
+                            .foregroundStyle(speechService.isListening ? .red : .secondary.opacity(0.5))
+                            .symbolEffect(.pulse, isActive: speechService.isListening)
+                    }
+                    .accessibilityIdentifier("chat_mic")
+
+                    Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             webSearchEnabled.toggle()
                         }
@@ -312,7 +358,10 @@ struct TaskChatView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 24))
                 .overlay(
                     RoundedRectangle(cornerRadius: 24)
-                        .stroke(Color(.separator).opacity(0.15), lineWidth: 0.5)
+                        .stroke(
+                            speechService.isListening ? Color.red.opacity(0.4) : Color(.separator).opacity(0.15),
+                            lineWidth: speechService.isListening ? 1.5 : 0.5
+                        )
                 )
 
                 Button {
@@ -338,12 +387,152 @@ struct TaskChatView: View {
             .padding(.vertical, 10)
             .background(.bar)
         }
+        .alert("Microphone Access Required", isPresented: $showSpeechPermissionDenied) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enable microphone and speech recognition access in Settings to use voice input.")
+        }
+    }
+
+    private var speechListeningBanner: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(.red)
+                .frame(width: 8, height: 8)
+                .opacity(speechService.isListening ? 1 : 0)
+                .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: speechService.isListening)
+
+            Text(speechService.transcribedText.isEmpty ? "Listening..." : speechService.transcribedText)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(speechService.transcribedText.isEmpty ? .secondary : .primary)
+                .lineLimit(2)
+
+            Spacer()
+
+            Button {
+                finishSpeechRecognition()
+            } label: {
+                Text("Done")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.accent)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.red.opacity(0.06))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private var canSend: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasAttachments = !attachments.isEmpty
         return (hasText || hasAttachments) && !isSending && !isUploading
+    }
+
+    // MARK: - Unconfigured Skills
+
+    private var unconfiguredSkills: [Agent.InstalledSkill] {
+        liveAgent.skills.filter { skill in
+            guard skill.source == "clawhub" else { return false }
+            guard let config = skill.config else { return true }
+            if case .bool(true) = config["_configured"] { return false }
+            if case .string(let keys) = config["_env_keys"], !keys.isEmpty { return true }
+            return false
+        }
+    }
+
+    @ViewBuilder
+    private var unconfiguredSkillsBanner: some View {
+        if !unconfiguredSkills.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(unconfiguredSkills) { skill in
+                        Button {
+                            configuringSkill = skill
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "key.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.orange)
+                                Text("Set up \(skill.name)")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.primary)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(.orange.opacity(0.08))
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(.orange.opacity(0.2), lineWidth: 0.5)
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+            }
+            .background(.bar)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    // MARK: - Speech Recognition
+
+    private func toggleSpeechRecognition() {
+        if speechService.isListening {
+            finishSpeechRecognition()
+            return
+        }
+
+        if speechService.needsPermission {
+            Task {
+                let granted = await speechService.requestPermissions()
+                if granted {
+                    startSpeechRecognition()
+                } else {
+                    showSpeechPermissionDenied = true
+                }
+            }
+            return
+        }
+
+        guard speechService.isAvailable else {
+            showSpeechPermissionDenied = true
+            return
+        }
+
+        startSpeechRecognition()
+    }
+
+    private func startSpeechRecognition() {
+        speechService.reset()
+        do {
+            try speechService.startListening()
+        } catch {
+            print("Speech recognition error: \(error.localizedDescription)")
+        }
+    }
+
+    private func finishSpeechRecognition() {
+        let text = speechService.transcribedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        speechService.stopListening()
+        if !text.isEmpty {
+            if inputText.isEmpty {
+                inputText = text
+            } else {
+                inputText += " " + text
+            }
+        }
+        speechService.reset()
     }
 
     // MARK: - Actions

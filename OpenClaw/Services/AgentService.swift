@@ -7,6 +7,19 @@ final class AgentService {
     var agents: [Agent] = []
     var isLoading = false
 
+    var lastActiveAgentId: String? {
+        get { UserDefaults.standard.string(forKey: "lastActiveAgentId") }
+        set { UserDefaults.standard.set(newValue, forKey: "lastActiveAgentId") }
+    }
+
+    var preferredAgent: Agent? {
+        if let id = lastActiveAgentId,
+           let agent = agents.first(where: { $0.id == id }) {
+            return agent
+        }
+        return agents.first
+    }
+
     private init() {}
 
     func fetchAgents() async throws {
@@ -77,6 +90,8 @@ final class AgentService {
             "/agents/\(agentId)/skills/\(skillId)/credentials",
             body: CredBody(credentials: credentials)
         )
+        // Refresh the agent so _configured flag and UI update immediately
+        try? await fetchAgents()
     }
 
     func removeSkill(agentId: String, skillId: String) async throws {
@@ -127,6 +142,10 @@ final class AgentService {
     func setupSkill(agentId: String, skillId: String) async throws -> SkillSetupResponse {
         try await APIClient.shared.post("/agents/\(agentId)/skills/\(skillId)/setup")
     }
+
+    func fetchSkillRequirements(agentId: String, skillId: String) async throws -> SkillRequirementsResponse {
+        try await APIClient.shared.get("/agents/\(agentId)/skills/\(skillId)/requirements")
+    }
 }
 
 // MARK: - Response Types
@@ -139,24 +158,29 @@ struct ClawHubInstallResponse: Codable {
     let installWarning: String?
     let installNote: String?
 
-    init(from decoder: Decoder) throws {
-        let agentFields = try Agent(from: decoder)
-        self.agent = agentFields
-
-        let container = try decoder.container(keyedBy: ExtraKeys.self)
-        self.setupRequired = try container.decodeIfPresent(Bool.self, forKey: .setupRequired)
-        self.setupRequirements = try container.decodeIfPresent([SkillSetupRequirement].self, forKey: .setupRequirements)
-        self.setupTaskId = try container.decodeIfPresent(String.self, forKey: .setupTaskId)
-        self.installWarning = try container.decodeIfPresent(String.self, forKey: .installWarning)
-        self.installNote = try container.decodeIfPresent(String.self, forKey: .installNote)
-    }
-
-    private enum ExtraKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey {
+        case agent
         case setupRequired
         case setupRequirements
         case setupTaskId
         case installWarning
         case installNote
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        if let nested = try? container.decode(Agent.self, forKey: .agent) {
+            self.agent = nested
+        } else {
+            self.agent = try Agent(from: decoder)
+        }
+
+        self.setupRequired = try container.decodeIfPresent(Bool.self, forKey: .setupRequired)
+        self.setupRequirements = try container.decodeIfPresent([SkillSetupRequirement].self, forKey: .setupRequirements)
+        self.setupTaskId = try container.decodeIfPresent(String.self, forKey: .setupTaskId)
+        self.installWarning = try container.decodeIfPresent(String.self, forKey: .installWarning)
+        self.installNote = try container.decodeIfPresent(String.self, forKey: .installNote)
     }
 }
 
@@ -175,6 +199,14 @@ struct SkillSetupResponse: Codable {
     let setupTaskId: String?
     let installCommands: [String]?
     let message: String?
+}
+
+struct SkillRequirementsResponse: Codable {
+    let skillId: String
+    let source: String
+    let requirements: [SkillSetupRequirement]
+    let installCommands: [String]
+    let isConfigured: Bool
 }
 
 private struct EmptyResult: Codable {}

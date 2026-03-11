@@ -228,20 +228,20 @@ struct PaywallView: View {
                     yearlyPlanCard(
                         title: "Yearly Plan",
                         subtitle: "12 mo · $49.99",
-                        weeklyPrice: "$0.96/wk",
+                        weeklyPrice: "$4.17/mo",
                         originalPrice: "$99.99/yr",
-                        saveBadge: "SAVE 87%",
+                        saveBadge: "BEST VALUE",
                         isSelected: selectedFallbackPlan == "yearly"
                     )
                 }
                 .buttonStyle(.plain)
 
-                Button { selectedFallbackPlan = "weekly" } label: {
-                    weeklyPlanCard(
-                        title: "Weekly Plan",
-                        weeklyPrice: "$4.99/wk",
-                        originalPrice: "$9.99/wk",
-                        isSelected: selectedFallbackPlan == "weekly"
+                Button { selectedFallbackPlan = "monthly" } label: {
+                    monthlyPlanCard(
+                        title: "Monthly Plan",
+                        monthlyPrice: "$9.99/mo",
+                        originalPrice: "$19.99/mo",
+                        isSelected: selectedFallbackPlan == "monthly"
                     )
                 }
                 .buttonStyle(.plain)
@@ -255,22 +255,22 @@ struct PaywallView: View {
                             yearlyPlanCard(
                                 title: "Yearly Plan",
                                 subtitle: "12 mo · \(product.displayPrice)",
-                                weeklyPrice: weeklyPrice(for: product),
+                                weeklyPrice: monthlyPrice(for: product),
                                 originalPrice: originalYearlyPrice(for: product),
-                                saveBadge: "SAVE 87%",
+                                saveBadge: "BEST VALUE",
                                 isSelected: isSelected
                             )
                         } else {
-                            weeklyPlanCard(
-                                title: "Weekly Plan",
-                                weeklyPrice: product.displayPrice + "/wk",
-                                originalPrice: originalWeeklyPrice(for: product),
+                            monthlyPlanCard(
+                                title: "Monthly Plan",
+                                monthlyPrice: product.displayPrice + "/mo",
+                                originalPrice: originalMonthlyPrice(for: product),
                                 isSelected: isSelected
                             )
                         }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier(isYearly ? "paywall_yearly" : "paywall_weekly")
+                    .accessibilityIdentifier(isYearly ? "paywall_yearly" : "paywall_monthly")
                 }
             }
         }
@@ -329,7 +329,7 @@ struct PaywallView: View {
         }
     }
 
-    private func weeklyPlanCard(title: String, weeklyPrice: String, originalPrice: String, isSelected: Bool) -> some View {
+    private func monthlyPlanCard(title: String, monthlyPrice: String, originalPrice: String, isSelected: Bool) -> some View {
         HStack {
             Text(title)
                 .font(.system(size: 16, weight: .medium))
@@ -342,7 +342,7 @@ struct PaywallView: View {
                     .font(.system(size: 13))
                     .strikethrough()
                     .foregroundStyle(.white.opacity(0.35))
-                Text(weeklyPrice)
+                Text(monthlyPrice)
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
             }
@@ -363,9 +363,9 @@ struct PaywallView: View {
         )
     }
 
-    private func weeklyPrice(for product: Product) -> String {
-        let weekly = product.price / 52
-        return String(format: "$%.2f/wk", NSDecimalNumber(decimal: weekly).doubleValue)
+    private func monthlyPrice(for product: Product) -> String {
+        let monthly = product.price / 12
+        return String(format: "$%.2f/mo", NSDecimalNumber(decimal: monthly).doubleValue)
     }
 
     private func originalYearlyPrice(for product: Product) -> String {
@@ -373,9 +373,9 @@ struct PaywallView: View {
         return String(format: "$%.2f/yr", NSDecimalNumber(decimal: original).doubleValue)
     }
 
-    private func originalWeeklyPrice(for product: Product) -> String {
+    private func originalMonthlyPrice(for product: Product) -> String {
         let original = product.price * 2
-        return String(format: "$%.2f/wk", NSDecimalNumber(decimal: original).doubleValue)
+        return String(format: "$%.2f/mo", NSDecimalNumber(decimal: original).doubleValue)
     }
 
     // MARK: - Continue Button

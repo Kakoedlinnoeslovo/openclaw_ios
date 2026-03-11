@@ -63,7 +63,7 @@ struct MainTabView: View {
         }
         .fullScreenCover(isPresented: $showQuickChat) {
             NavigationStack {
-                if let agent = agentService.agents.first {
+                if let agent = agentService.preferredAgent {
                     TaskChatView(agent: agent)
                         .toolbar {
                             ToolbarItem(placement: .cancellationAction) {
@@ -106,8 +106,12 @@ struct MainTabView: View {
             Spacer()
 
             tabBarItem(icon: "clock.arrow.circlepath", iconInactive: "clock.arrow.circlepath", label: "History", tag: 2)
+
+            Spacer()
+
+            tabBarItem(icon: "gearshape.fill", iconInactive: "gearshape", label: "Settings", tag: 3)
         }
-        .padding(.horizontal, 32)
+        .padding(.horizontal, 24)
         .padding(.top, 8)
         .padding(.bottom, 24)
         .background(

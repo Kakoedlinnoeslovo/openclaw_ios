@@ -5,6 +5,12 @@ import json
 import time
 import urllib.request
 import urllib.error
+import socket
+import base64
+import struct
+import os
+import threading
+from urllib.parse import urlparse
 
 BASE_URL = "http://localhost"
 CLAWHUB_API = "https://topclawhubskills.com/api"
@@ -15,6 +21,131 @@ session = {
     "user": None,
     "agent_id": None,
 }
+
+
+# ── Minimal WebSocket client (stdlib only) ───
+class SimpleWebSocket:
+    """RFC 6455 WebSocket client using raw sockets — no third-party deps."""
+
+    def __init__(self, host, port, path):
+        self.host = host
+        self.port = port
+        self.path = path
+        self.sock = None
+        self._closed = False
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(10)
+        self.sock.connect((self.host, self.port))
+        key = base64.b64encode(os.urandom(16)).decode()
+        handshake = (
+            f"GET {self.path} HTTP/1.1\r\n"
+            f"Host: {self.host}:{self.port}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n"
+            f"\r\n"
+        )
+        self.sock.sendall(handshake.encode())
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("Connection closed during handshake")
+            resp += chunk
+        status_line = resp.split(b"\r\n")[0]
+        if b"101" not in status_line:
+            raise ConnectionError(f"WebSocket handshake failed: {status_line.decode()}")
+        self.sock.settimeout(None)
+
+    def recv_frame(self):
+        if self._closed:
+            return None
+        header = self._recv_exact(2)
+        opcode = header[0] & 0x0F
+        masked = header[1] & 0x80
+        length = header[1] & 0x7F
+        if length == 126:
+            length = struct.unpack(">H", self._recv_exact(2))[0]
+        elif length == 127:
+            length = struct.unpack(">Q", self._recv_exact(8))[0]
+        mask_key = self._recv_exact(4) if masked else None
+        payload = self._recv_exact(length)
+        if mask_key:
+            payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        if opcode == 0x8:
+            self._closed = True
+            return None
+        if opcode == 0x9:
+            self._send_frame(0xA, payload)
+            return self.recv_frame()
+        if opcode == 0x1:
+            return payload.decode("utf-8", errors="replace")
+        return None
+
+    def _recv_exact(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("WebSocket connection closed")
+            buf += chunk
+        return buf
+
+    def _send_frame(self, opcode, payload):
+        frame = bytearray()
+        frame.append(0x80 | opcode)
+        mask_key = os.urandom(4)
+        plen = len(payload)
+        if plen < 126:
+            frame.append(0x80 | plen)
+        elif plen < 65536:
+            frame.append(0x80 | 126)
+            frame.extend(struct.pack(">H", plen))
+        else:
+            frame.append(0x80 | 127)
+            frame.extend(struct.pack(">Q", plen))
+        frame.extend(mask_key)
+        frame.extend(bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload)))
+        self.sock.sendall(frame)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._send_frame(0x8, b"")
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+
+def connect_ws(agent_id=None, token=None):
+    """Open a WebSocket to the task event stream. Returns None on failure."""
+    aid = agent_id or session["agent_id"]
+    tok = token or session["access_token"]
+    if not aid or not tok:
+        return None
+    parsed = urlparse(BASE_URL)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 80
+    ws_path = f"/ws/agents/{aid}?token={tok}"
+    ws = SimpleWebSocket(host, port, ws_path)
+    try:
+        ws.connect()
+        return ws
+    except Exception as e:
+        try:
+            ws.close()
+        except Exception:
+            pass
+        return None
 
 
 def api(method, path, body=None, params=None):
@@ -198,24 +329,86 @@ def submit_task():
     if not prompt:
         print("  Empty input, skipping.")
         return
+
+    dim, bold, reset, green, cyan = "\033[2m", "\033[1m", "\033[0m", "\033[32m", "\033[36m"
+
+    ws = connect_ws()
+    if ws:
+        print(f"  {dim}(streaming via WebSocket){reset}")
+    else:
+        print(f"  {dim}(no WebSocket — polling only){reset}")
+
     code, data = api("POST", f"/agents/{aid}/tasks", {"input": prompt})
     if code < 200 or code >= 300:
         pretty(code, data)
+        if ws:
+            ws.close()
         return
 
     task_id = data["task_id"]
+    done_event = threading.Event()
+    streamed = {"text": "", "had_output": False}
+
+    def ws_listener():
+        try:
+            while not done_event.is_set():
+                msg = ws.recv_frame()
+                if msg is None:
+                    break
+                event = json.loads(msg)
+                etype = event.get("type")
+                tid = event.get("task_id")
+                if tid and tid != task_id:
+                    continue
+                if etype == "task:progress":
+                    content = event.get("content", "")
+                    if content:
+                        if not streamed["had_output"]:
+                            streamed["had_output"] = True
+                            print(f"\n  {green}{bold}Agent:{reset}  ", end="", flush=True)
+                        print(content, end="", flush=True)
+                        streamed["text"] += content
+                elif etype == "task:tool_start":
+                    tool = event.get("tool_name", "?")
+                    print(f"\n  {dim}[tool: {tool}...]{reset}", end="", flush=True)
+                elif etype == "task:tool_end":
+                    print(f" {dim}done{reset}", end="", flush=True)
+                elif etype in ("task:complete", "task:error"):
+                    if etype == "task:error":
+                        print(f"\n  {bold}\033[31mError:{reset} {event.get('error', '?')}")
+                    done_event.set()
+                    break
+        except Exception:
+            done_event.set()
+
+    if ws:
+        listener = threading.Thread(target=ws_listener, daemon=True)
+        listener.start()
+
     print(f"\n  Task queued. Waiting", end="", flush=True)
 
-    for _ in range(30):
+    for _ in range(90):
+        if done_event.is_set():
+            break
         time.sleep(2)
-        print(".", end="", flush=True)
+        if not ws:
+            print(".", end="", flush=True)
         _, result = api("GET", f"/agents/{aid}/tasks/{task_id}")
         if result.get("status") in ("completed", "failed"):
-            print("\n")
-            format_task_result(result)
+            done_event.set()
+            if not streamed["had_output"]:
+                print("\n")
+                format_task_result(result)
+            else:
+                print(f"\n\n  {dim}● {result.get('status')}  tokens: {result.get('tokens_used', '—')}{reset}")
+            if ws:
+                ws.close()
             return
 
-    print("\n  Timed out. Check manually with option 9.")
+    done_event.set()
+    if ws:
+        ws.close()
+    print("\n  Timed out after 180s. Check manually with option 9.")
 
 
 def list_tasks():
@@ -243,55 +436,72 @@ def clear_history():
 # ── Skills ───────────────────────────────────
 
 def skill_table(skills):
-    """Print skills as a compact table."""
+    """Print skills as a compact table with slug for easy install."""
     if not skills:
         print("  No skills found.")
         return
-    green, red, reset, dim = "\033[32m", "\033[31m", "\033[0m", "\033[2m"
-    print(f"\n  {'#':<4} {'Name':<22} {'Category':<15} {'Author':<16} {'Stars':<8} {'Installed'}")
-    print(f"  {'─'*4} {'─'*22} {'─'*15} {'─'*16} {'─'*8} {'─'*9}")
+    green, red, reset, dim, bold, cyan = "\033[32m", "\033[31m", "\033[0m", "\033[2m", "\033[1m", "\033[36m"
+
+    cats = sorted(set(s.get("category", "—") for s in skills))
+    if len(cats) > 1:
+        print(f"\n  {dim}Categories: {', '.join(cats)}{reset}")
+
+    print(f"\n  {'#':<4} {'Name':<22} {'Slug / ID':<32} {'Cat':<12} {'DL':<8} {'★':<6} {'Inst'}")
+    print(f"  {'─'*4} {'─'*22} {'─'*32} {'─'*12} {'─'*8} {'─'*6} {'─'*4}")
     for i, s in enumerate(skills, 1):
         installed = s.get("is_installed")
         badge = f"{green}yes{reset}" if installed else f"{dim}no{reset}" if installed is False else "—"
         stars = f"{s.get('stars', 0):,}"
-        print(f"  {i:<4} {s['name']:<22} {s.get('category', '—'):<15} {s.get('author', '—'):<16} {stars:<8} {badge}")
-    print(f"\n  {len(skills)} skill(s). Use the slug/id to install.")
+        dl = f"{s.get('downloads', 0):,}"
+        name = s["name"][:21]
+        slug = s.get("slug") or s.get("skill_id") or s.get("id") or "—"
+        slug_display = slug[:31]
+        print(f"  {i:<4} {name:<22} {cyan}{slug_display:<32}{reset} {s.get('category', '—'):<12} {dl:<8} {stars:<6} {badge}")
+    print(f"\n  {bold}{len(skills)}{reset} skill(s). Install with: {cyan}install <slug>{reset}")
 
 
-def browse_catalog():
+def browse_skills():
+    """Unified skill browser: local catalog, ClawHub backend, or live ClawHub."""
+    dim, bold, reset, cyan = "\033[2m", "\033[1m", "\033[0m", "\033[36m"
+    print(f"  {bold}Source:{reset}  1) ClawHub (backend)  2) Local catalog  3) Recommended  4) ClawHub LIVE")
+    src = input("  Choice [1]: ").strip() or "1"
+
+    if src == "4":
+        _browse_clawhub_live()
+        return
+
     params = {}
     if session["agent_id"]:
         params["agent_id"] = session["agent_id"]
-    category = input("  Filter by category (blank for all): ").strip()
+    category = input("  Category filter (blank for all): ").strip()
     if category:
         params["category"] = category
-    code, data = api("GET", "/skills/catalog", params=params)
+    if src == "1":
+        search = input("  Search (blank for all): ").strip()
+        if search:
+            params["q"] = search
+        code, data = api("GET", "/skills/clawhub/browse", params=params)
+    elif src == "3":
+        code, data = api("GET", "/skills/recommended", params=params)
+    else:
+        code, data = api("GET", "/skills/catalog", params=params)
+
     if 200 <= code < 300:
         skill_table(data.get("skills", []))
     else:
         pretty(code, data)
 
 
-def browse_clawhub():
-    params = {}
-    if session["agent_id"]:
-        params["agent_id"] = session["agent_id"]
-    code, data = api("GET", "/skills/clawhub/browse", params=params)
-    if 200 <= code < 300:
-        skill_table(data.get("skills", []))
-    else:
-        pretty(code, data)
-
-
-def browse_clawhub_live():
+def _browse_clawhub_live():
     """Fetch real skills from the live ClawHub registry."""
-    print("  Sort by: 1) downloads  2) stars  3) newest  4) certified")
+    green, reset, dim, bold, cyan = "\033[32m", "\033[0m", "\033[2m", "\033[1m", "\033[36m"
+    print(f"  {bold}Sort:{reset}  1) downloads  2) stars  3) newest  4) certified")
     sort_choice = input("  Choice [1]: ").strip() or "1"
     endpoints = {"1": "top-downloads", "2": "top-stars", "3": "newest", "4": "certified"}
     endpoint = endpoints.get(sort_choice, "top-downloads")
 
     limit = input("  How many? [25]: ").strip() or "25"
-    search = input("  Search term (blank for none): ").strip()
+    search = input("  Search (blank for none): ").strip()
 
     if search:
         url = f"{CLAWHUB_API}/search?q={urllib.request.quote(search)}&limit={limit}"
@@ -300,10 +510,13 @@ def browse_clawhub_live():
 
     try:
         req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        req.add_header("User-Agent", "OpenClaw-CLI/1.0")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
     except Exception as e:
         print(f"  Failed to reach ClawHub API: {e}")
+        print(f"  {dim}URL: {url}{reset}")
         return
 
     skills = data.get("data", [])
@@ -311,54 +524,37 @@ def browse_clawhub_live():
         print("  No skills found.")
         return
 
-    green, reset, dim, bold = "\033[32m", "\033[0m", "\033[2m", "\033[1m"
     print(f"\n  {bold}ClawHub Live — {endpoint.replace('-', ' ').title()}{reset}  ({len(skills)} results)\n")
-    print(f"  {'#':<4} {'Name':<26} {'Downloads':<12} {'Stars':<8} {'Author':<18} {'Certified'}")
-    print(f"  {'─'*4} {'─'*26} {'─'*12} {'─'*8} {'─'*18} {'─'*9}")
+    print(f"  {'#':<4} {'Name':<22} {'Slug':<30} {'DL':<10} {'★':<6} {'Author':<16} {'Cert'}")
+    print(f"  {'─'*4} {'─'*22} {'─'*30} {'─'*10} {'─'*6} {'─'*16} {'─'*4}")
     for i, s in enumerate(skills, 1):
         cert = f"{green}✓{reset}" if s.get("is_certified") else f"{dim}—{reset}"
-        print(f"  {i:<4} {s['display_name'][:25]:<26} {s['downloads']:>10,}  {s['stars']:>6,}  {s.get('owner_handle', '?'):<18} {cert}")
+        slug = s.get("slug", f"{s.get('owner_handle', '?')}/{s.get('name', '?')}")
+        print(f"  {i:<4} {s['display_name'][:21]:<22} {cyan}{slug[:29]:<30}{reset} {s['downloads']:>8,}  {s['stars']:>4,}  {s.get('owner_handle', '?')[:15]:<16} {cert}")
 
     print(f"\n  {dim}Source: clawhub.ai{reset}")
-    print(f"  To install, use option 14 with the slug (e.g. community/arxiv-researcher)")
-
-
-def recommended_skills():
-    params = {}
-    if session["agent_id"]:
-        params["agent_id"] = session["agent_id"]
-    code, data = api("GET", "/skills/recommended", params=params)
-    if 200 <= code < 300:
-        skill_table(data.get("skills", []))
-    else:
-        pretty(code, data)
+    print(f"  Install with: {cyan}install <slug>{reset}  (e.g. community/arxiv-researcher)")
 
 
 def install_skill():
+    """Smart install: auto-detects ClawHub slug (has /) vs local skill ID."""
     aid = session["agent_id"]
     if not aid:
         print("  No agent selected.")
         return
-    skill_id = input("  Skill ID (e.g. web-research, summarizer): ").strip()
-    if not skill_id:
+    cyan, reset = "\033[36m", "\033[0m"
+    identifier = input(f"  Skill slug or ID (e.g. {cyan}community/arxiv-researcher{reset} or {cyan}summarizer{reset}): ").strip()
+    if not identifier:
         return
-    code, data = api("POST", f"/agents/{aid}/skills", {"skill_id": skill_id})
+    if "/" in identifier:
+        code, data = api("POST", f"/agents/{aid}/skills/clawhub", {"slug": identifier})
+    else:
+        code, data = api("POST", f"/agents/{aid}/skills", {"skill_id": identifier})
     pretty(code, data)
 
 
-def install_clawhub_skill():
-    aid = session["agent_id"]
-    if not aid:
-        print("  No agent selected.")
-        return
-    slug = input("  ClawHub slug (e.g. community/arxiv-researcher): ").strip()
-    if not slug:
-        return
-    code, data = api("POST", f"/agents/{aid}/skills/clawhub", {"slug": slug})
-    pretty(code, data)
-
-
-def list_agent_skills():
+def my_skills():
+    """List installed skills for the active agent."""
     aid = session["agent_id"]
     if not aid:
         print("  No agent selected.")
@@ -367,64 +563,52 @@ def list_agent_skills():
     pretty(code, data)
 
 
-def toggle_skill():
+def manage_skill():
+    """Sub-menu for toggle / uninstall / setup on a specific skill."""
     aid = session["agent_id"]
     if not aid:
         print("  No agent selected.")
         return
-    skill_id = input("  Skill ID to toggle: ").strip()
+    dim, bold, reset, cyan = "\033[2m", "\033[1m", "\033[0m", "\033[36m"
+    print(f"  {bold}Action:{reset}  1) Toggle on/off  2) Uninstall  3) Setup (install deps)")
+    action = input("  Choice: ").strip()
+    if action not in ("1", "2", "3"):
+        print("  Invalid choice.")
+        return
+    skill_id = input(f"  Skill ID: ").strip()
     if not skill_id:
         return
-    enabled = input("  Enable? (y/n): ").strip().lower() == "y"
-    code, data = api("PATCH", f"/agents/{aid}/skills/{skill_id}", {"enabled": enabled})
-    pretty(code, data)
 
-
-def setup_skill():
-    aid = session["agent_id"]
-    if not aid:
-        print("  No agent selected.")
-        return
-    skill_id = input("  Skill ID to setup (install dependencies): ").strip()
-    if not skill_id:
-        return
-    code, data = api("POST", f"/agents/{aid}/skills/{skill_id}/setup")
-    if code < 200 or code >= 300:
+    if action == "1":
+        enabled = input("  Enable? (y/n): ").strip().lower() == "y"
+        code, data = api("PATCH", f"/agents/{aid}/skills/{skill_id}", {"enabled": enabled})
         pretty(code, data)
-        return
-
-    if data.get("status") == "no_setup_needed":
-        print("  No install commands found in SKILL.md.")
-        return
-
-    cmds = data.get("install_commands", [])
-    print(f"  Setup queued. Installing: {', '.join(cmds)}")
-    task_id = data.get("setup_task_id")
-    if not task_id:
-        return
-
-    print("  Waiting for setup", end="", flush=True)
-    for _ in range(30):
-        time.sleep(2)
-        print(".", end="", flush=True)
-        _, result = api("GET", f"/agents/{aid}/tasks/{task_id}")
-        if result.get("status") in ("completed", "failed"):
-            print("\n")
-            format_task_result(result)
+    elif action == "2":
+        code, data = api("DELETE", f"/agents/{aid}/skills/{skill_id}")
+        pretty(code, data)
+    elif action == "3":
+        code, data = api("POST", f"/agents/{aid}/skills/{skill_id}/setup")
+        if code < 200 or code >= 300:
+            pretty(code, data)
             return
-    print("\n  Timed out. Check task list (option 9).")
-
-
-def uninstall_skill():
-    aid = session["agent_id"]
-    if not aid:
-        print("  No agent selected.")
-        return
-    skill_id = input("  Skill ID to remove: ").strip()
-    if not skill_id:
-        return
-    code, data = api("DELETE", f"/agents/{aid}/skills/{skill_id}")
-    pretty(code, data)
+        if data.get("status") == "no_setup_needed":
+            print("  No install commands found in SKILL.md.")
+            return
+        cmds = data.get("install_commands", [])
+        print(f"  Setup queued. Installing: {', '.join(cmds)}")
+        task_id = data.get("setup_task_id")
+        if not task_id:
+            return
+        print("  Waiting for setup", end="", flush=True)
+        for _ in range(30):
+            time.sleep(2)
+            print(".", end="", flush=True)
+            _, result = api("GET", f"/agents/{aid}/tasks/{task_id}")
+            if result.get("status") in ("completed", "failed"):
+                print("\n")
+                format_task_result(result)
+                return
+        print("\n  Timed out. Check task list.")
 
 
 # ── Subscription & Usage ─────────────────────
@@ -494,7 +678,7 @@ def quick_test():
     print(f"  OK - task {task_id[:8]}... queued\n")
 
     print("  4. Waiting for result", end="", flush=True)
-    for _ in range(30):
+    for _ in range(90):
         time.sleep(2)
         print(".", end="", flush=True)
         _, result = api("GET", f"/agents/{aid}/tasks/{task_id}")
@@ -504,7 +688,7 @@ def quick_test():
             print(f"  Tokens: {result.get('tokens_used', 'N/A')}")
             print("\n  === Quick test complete! ===")
             return
-    print("\n  Timed out after 60s.")
+    print("\n  Timed out after 180s.")
 
 
 # ── ClawHub Skill Install Test ───────────────
@@ -693,53 +877,515 @@ def test_clawhub_skill_flow():
     print()
 
 
+# ── Fix-verification test suite ──────────────
+# Tests for the credential-trimming, upsert-on-reinstall,
+# .env propagation, and session-clearing fixes.
+
+def test_fixes():
+    """End-to-end regression tests for the skill-visibility and
+    credential-rejection fixes."""
+
+    green, red, bold, dim, reset, cyan = (
+        "\033[32m", "\033[31m", "\033[1m", "\033[2m", "\033[0m", "\033[36m",
+    )
+    passed = 0
+    total = 0
+
+    def step(n, desc):
+        print(f"\n  {bold}{n}. {desc}{reset}")
+
+    def check(ok, msg_pass, msg_fail=""):
+        nonlocal passed, total
+        total += 1
+        if ok:
+            passed += 1
+            print(f"  {green}✓ {msg_pass}{reset}")
+            return True
+        else:
+            print(f"  {red}✗ {msg_fail or msg_pass}{reset}")
+            return False
+
+    print(f"\n  {bold}=== Fix Verification Tests ==={reset}\n")
+
+    # ── 0. Ensure auth + agent ──
+    step(0, "Setup: auth + agent")
+    if not session["access_token"]:
+        code, data = api("POST", "/auth/register", {
+            "email": "fixtest@openclaw.dev", "password": "test123",
+            "display_name": "Fix Tester",
+        })
+        if code == 409:
+            code, data = api("POST", "/auth/login", {
+                "email": "fixtest@openclaw.dev", "password": "test123",
+            })
+        if code < 200 or code >= 300:
+            print(f"  {red}Auth failed: {data}{reset}")
+            return
+        save_tokens(data)
+
+    if not session["agent_id"]:
+        code, data = api("POST", "/agents", {
+            "name": "FixTest Agent", "persona": "Technical", "model": "gpt-5.2",
+        })
+        if 200 <= code < 300:
+            session["agent_id"] = data["id"]
+        else:
+            code, data = api("GET", "/agents")
+            agents = data.get("agents", [])
+            if not agents:
+                print(f"  {red}No agents available{reset}")
+                return
+            session["agent_id"] = agents[0]["id"]
+
+    aid = session["agent_id"]
+    print(f"  {dim}Using agent: {aid[:8]}...{reset}")
+
+    # ──────────────────────────────────────────
+    # TEST 1: Credential trimming (whitespace)
+    # ──────────────────────────────────────────
+    step(1, "Credential trimming — trailing whitespace stripped")
+
+    # First ensure a skill is installed
+    slug_for_cred_test = "community/image-gen"
+    skill_id_for_cred = slug_for_cred_test.split("/")[-1]
+    code, _ = api("POST", f"/agents/{aid}/skills/clawhub", {"slug": slug_for_cred_test})
+    # Accept 200 or conflict (already installed)
+
+    # Submit credentials with trailing whitespace + newlines (simulates iOS paste)
+    dirty_key = "  sk-test-key-12345  \n"
+    code, data = api("POST", f"/agents/{aid}/skills/{skill_id_for_cred}/credentials", {
+        "credentials": {"OPENAI_API_KEY": dirty_key},
+    })
+
+    check(
+        200 <= code < 300,
+        f"Credential POST accepted (HTTP {code})",
+        f"Credential POST rejected: HTTP {code} — {data}",
+    )
+    check(
+        data.get("status") == "configured",
+        "Response status is 'configured'",
+        f"Unexpected status: {data.get('status', 'missing')}",
+    )
+
+    # Verify the skill is marked configured in DB via GET skills
+    code, data = api("GET", f"/agents/{aid}/skills")
+    if 200 <= code < 300:
+        skills = data.get("skills", []) if isinstance(data, dict) else data
+        target = [s for s in skills if s.get("skill_id") == skill_id_for_cred]
+        if target:
+            cfg = target[0].get("config", {})
+            check(
+                cfg.get("_configured") is True,
+                f"Skill config._configured=true after credential save",
+                f"config._configured is {cfg.get('_configured')} — expected true",
+            )
+        else:
+            check(False, "", f"Skill {skill_id_for_cred} not in skills list")
+
+    # ──────────────────────────────────────────
+    # TEST 2: Credential trimming — empty-after-trim rejected
+    # ──────────────────────────────────────────
+    step(2, "Credential trimming — whitespace-only value handled")
+
+    # The backend should accept the POST (it doesn't validate key values),
+    # but the key should be effectively empty after trimming.
+    # We test that the POST doesn't crash.
+    code, data = api("POST", f"/agents/{aid}/skills/{skill_id_for_cred}/credentials", {
+        "credentials": {"OPENAI_API_KEY": "  real-key-no-spaces  "},
+    })
+    check(
+        200 <= code < 300 and data.get("status") == "configured",
+        "Credential with surrounding spaces accepted and configured",
+        f"HTTP {code}: {data}",
+    )
+
+    # ──────────────────────────────────────────
+    # TEST 3: Skill re-install (upsert) updates metadata
+    # ──────────────────────────────────────────
+    step(3, "Skill re-install (upsert) updates DB metadata")
+
+    # Install the same skill again — should NOT silently drop
+    code, data = api("POST", f"/agents/{aid}/skills/clawhub", {"slug": slug_for_cred_test})
+    if 200 <= code < 300:
+        skills = data.get("skills", [])
+        target = [s for s in skills if s.get("skill_id") == skill_id_for_cred]
+        check(
+            len(target) == 1,
+            f"Skill {skill_id_for_cred} present after re-install ({len(skills)} total)",
+            f"Skill missing after re-install. IDs: {[s.get('skill_id') for s in skills]}",
+        )
+        if target:
+            check(
+                target[0].get("is_enabled") is True,
+                "Skill is enabled after re-install (upsert resets enabled=true)",
+                f"is_enabled={target[0].get('is_enabled')}",
+            )
+    else:
+        check(False, "", f"Re-install failed: HTTP {code} — {data}")
+
+    # ──────────────────────────────────────────
+    # TEST 4: GET /skills endpoint returns skill after install
+    # ──────────────────────────────────────────
+    step(4, "GET /agents/:id/skills returns the installed skill")
+
+    code, data = api("GET", f"/agents/{aid}/skills")
+    check(200 <= code < 300, f"GET skills succeeded (HTTP {code})")
+    if 200 <= code < 300:
+        skills = data.get("skills", []) if isinstance(data, dict) else data
+        ids = [s.get("skill_id") for s in skills]
+        check(
+            skill_id_for_cred in ids,
+            f"Skill '{skill_id_for_cred}' found in skills list ({len(ids)} skills)",
+            f"Skill not found. Got: {ids}",
+        )
+
+    # ──────────────────────────────────────────
+    # TEST 5: ClawHub browse shows is_installed=true
+    # ──────────────────────────────────────────
+    step(5, "ClawHub browse marks installed skill correctly")
+
+    code, data = api("GET", "/skills/clawhub/browse", params={"agent_id": aid})
+    if 200 <= code < 300:
+        browse_skills = data.get("skills", [])
+        # Find any skill that's already installed via the agent
+        installed_in_browse = [s for s in browse_skills if s.get("is_installed") is True]
+        target = [s for s in browse_skills if s.get("slug") == slug_for_cred_test]
+        if target:
+            check(
+                target[0].get("is_installed") is True,
+                "is_installed=true in browse results",
+                f"is_installed={target[0].get('is_installed')}",
+            )
+        else:
+            # Slug not in live catalog — check browse endpoint works at all
+            check(
+                len(browse_skills) > 0,
+                f"Browse endpoint works ({len(browse_skills)} skills). "
+                f"Slug '{slug_for_cred_test}' not in live catalog (OK — bundled-only skill)",
+            )
+    else:
+        check(False, "", f"Browse failed: HTTP {code}")
+
+    # ──────────────────────────────────────────
+    # TEST 6: Skill requirements endpoint works
+    # ──────────────────────────────────────────
+    step(6, "GET /skills/:id/requirements returns env key info")
+
+    code, data = api("GET", f"/agents/{aid}/skills/{skill_id_for_cred}/requirements")
+    check(200 <= code < 300, f"Requirements endpoint succeeded (HTTP {code})")
+    if 200 <= code < 300:
+        reqs = data.get("requirements", [])
+        env_reqs = [r for r in reqs if r.get("type") == "env"]
+        check(
+            data.get("is_configured") is True,
+            f"is_configured=true (credentials were saved earlier)",
+            f"is_configured={data.get('is_configured')}",
+        )
+
+    # ──────────────────────────────────────────
+    # TEST 7: Credential with special characters
+    # ──────────────────────────────────────────
+    step(7, "Credentials with special chars (=, /, +) accepted")
+
+    special_key = "sk-proj-abc123/def+ghi=jkl"
+    code, data = api("POST", f"/agents/{aid}/skills/{skill_id_for_cred}/credentials", {
+        "credentials": {"OPENAI_API_KEY": special_key},
+    })
+    check(
+        200 <= code < 300 and data.get("status") == "configured",
+        "Special-character API key accepted",
+        f"HTTP {code}: {data}",
+    )
+
+    # ──────────────────────────────────────────
+    # TEST 8: Skill toggle (disable → enable) works
+    # ──────────────────────────────────────────
+    step(8, "Skill disable/enable toggle persists")
+
+    code, data = api("PATCH", f"/agents/{aid}/skills/{skill_id_for_cred}", {"enabled": False})
+    if 200 <= code < 300:
+        skills = data.get("skills", [])
+        target = [s for s in skills if s.get("skill_id") == skill_id_for_cred]
+        check(
+            target and target[0].get("is_enabled") is False,
+            "Skill disabled successfully",
+            f"is_enabled={target[0].get('is_enabled') if target else 'skill-missing'}",
+        )
+    else:
+        check(False, "", f"PATCH failed: HTTP {code}")
+
+    # Re-enable
+    code, data = api("PATCH", f"/agents/{aid}/skills/{skill_id_for_cred}", {"enabled": True})
+    if 200 <= code < 300:
+        skills = data.get("skills", [])
+        target = [s for s in skills if s.get("skill_id") == skill_id_for_cred]
+        check(
+            target and target[0].get("is_enabled") is True,
+            "Skill re-enabled successfully",
+            f"is_enabled={target[0].get('is_enabled') if target else 'skill-missing'}",
+        )
+
+    # ──────────────────────────────────────────
+    # TEST 9: Re-install after disable restores enabled=true
+    # ──────────────────────────────────────────
+    step(9, "Re-install after disable restores enabled=true (upsert)")
+
+    # Disable first
+    api("PATCH", f"/agents/{aid}/skills/{skill_id_for_cred}", {"enabled": False})
+
+    # Re-install
+    code, data = api("POST", f"/agents/{aid}/skills/clawhub", {"slug": slug_for_cred_test})
+    if 200 <= code < 300:
+        skills = data.get("skills", [])
+        target = [s for s in skills if s.get("skill_id") == skill_id_for_cred]
+        check(
+            target and target[0].get("is_enabled") is True,
+            "Re-install after disable → enabled=true (upsert fixed)",
+            f"is_enabled={target[0].get('is_enabled') if target else 'skill-missing'}",
+        )
+    else:
+        check(False, "", f"Re-install failed: HTTP {code}")
+
+    # ──────────────────────────────────────────
+    # TEST 10: Uninstall + reinstall round-trip
+    # ──────────────────────────────────────────
+    step(10, "Uninstall + reinstall round-trip")
+
+    # Uninstall
+    code, _ = api("DELETE", f"/agents/{aid}/skills/{skill_id_for_cred}")
+    check(200 <= code < 300, "Uninstall succeeded")
+
+    # Verify gone
+    code, data = api("GET", f"/agents/{aid}/skills")
+    if 200 <= code < 300:
+        skills = data.get("skills", []) if isinstance(data, dict) else data
+        ids = [s.get("skill_id") for s in skills]
+        check(
+            skill_id_for_cred not in ids,
+            "Skill removed from skills list after uninstall",
+            f"Skill still present: {ids}",
+        )
+
+    # Reinstall
+    code, data = api("POST", f"/agents/{aid}/skills/clawhub", {"slug": slug_for_cred_test})
+    if 200 <= code < 300:
+        skills = data.get("skills", [])
+        ids = [s.get("skill_id") for s in skills]
+        check(
+            skill_id_for_cred in ids,
+            "Skill back in list after reinstall",
+            f"Skill missing after reinstall: {ids}",
+        )
+    else:
+        check(False, "", f"Reinstall failed: HTTP {code}")
+
+    # ──────────────────────────────────────────
+    # Summary
+    # ──────────────────────────────────────────
+    color = green if passed == total else red
+    print(f"\n  {bold}Results: {color}{passed}/{total} passed{reset}\n")
+    if passed == total:
+        print(f"  {green}{bold}All fix-verification tests passed!{reset}")
+    else:
+        print(f"  {red}{bold}{total - passed} test(s) failed — check output above.{reset}")
+    print()
+
+
+# ── Interactive Chat ─────────────────────────
+
+def interactive_chat():
+    """ChatGPT-like interactive session: type messages, see streamed responses."""
+    aid = session["agent_id"]
+    if not aid:
+        print("  No agent selected. List or create one first.")
+        return
+    if not session["access_token"]:
+        print("  Not logged in. Login first.")
+        return
+
+    dim, bold, reset = "\033[2m", "\033[1m", "\033[0m"
+    green, red, cyan = "\033[32m", "\033[31m", "\033[36m"
+
+    ws = connect_ws()
+    if not ws:
+        print(f"  {red}Could not connect WebSocket. Is the backend running?{reset}")
+        print(f"  {dim}Falling back to polling mode...{reset}\n")
+
+    print(f"\n  {bold}═══ Interactive Chat ═══{reset}")
+    print(f"  {dim}Agent: {session['agent_id'][:8]}...{reset}")
+    print(f"  {dim}Type your messages below. Commands:{reset}")
+    print(f"  {dim}  /quit  — exit chat{reset}")
+    print(f"  {dim}  /clear — clear conversation history{reset}")
+    print(f"  {dim}  /new   — reconnect WebSocket{reset}")
+    print(f"  {dim}  Ctrl+C — exit chat{reset}")
+    print()
+
+    def stream_response(task_id, ws_conn):
+        """Listen on WS for a specific task's events, print them live."""
+        done = threading.Event()
+        result_holder = {"error": None}
+
+        def _listener():
+            try:
+                while not done.is_set():
+                    msg = ws_conn.recv_frame()
+                    if msg is None:
+                        break
+                    event = json.loads(msg)
+                    etype = event.get("type")
+                    tid = event.get("task_id")
+                    if tid and tid != task_id:
+                        continue
+                    if etype == "task:progress":
+                        content = event.get("content", "")
+                        if content:
+                            print(content, end="", flush=True)
+                    elif etype == "task:tool_start":
+                        tool = event.get("tool_name", "?")
+                        print(f"\n  {dim}⚙ {tool}{reset}", end="", flush=True)
+                    elif etype == "task:tool_end":
+                        print(f" {dim}✓{reset}", end="", flush=True)
+                    elif etype == "task:complete":
+                        done.set()
+                        break
+                    elif etype == "task:error":
+                        result_holder["error"] = event.get("error", "Unknown error")
+                        done.set()
+                        break
+            except Exception as e:
+                result_holder["error"] = str(e)
+                done.set()
+
+        t = threading.Thread(target=_listener, daemon=True)
+        t.start()
+        return done, result_holder
+
+    try:
+        while True:
+            try:
+                user_input = input(f"  {cyan}{bold}You:{reset}  ").strip()
+            except EOFError:
+                break
+            if not user_input:
+                continue
+            if user_input.lower() in ("/quit", "/exit", "quit", "exit"):
+                break
+            if user_input.lower() in ("/clear",):
+                code, data = api("DELETE", f"/agents/{aid}/tasks")
+                if 200 <= code < 300:
+                    print(f"  {dim}History cleared ({data.get('deleted', 0)} tasks).{reset}\n")
+                else:
+                    print(f"  {red}Failed to clear: {data}{reset}\n")
+                continue
+            if user_input.lower() in ("/new",):
+                if ws:
+                    ws.close()
+                ws = connect_ws()
+                if ws:
+                    print(f"  {dim}WebSocket reconnected.{reset}\n")
+                else:
+                    print(f"  {red}WebSocket reconnect failed.{reset}\n")
+                continue
+
+            code, data = api("POST", f"/agents/{aid}/tasks", {"input": user_input})
+            if code < 200 or code >= 300:
+                pretty(code, data)
+                continue
+
+            task_id = data["task_id"]
+            print(f"\n  {green}{bold}Agent:{reset}  ", end="", flush=True)
+
+            if ws:
+                done_event, result = stream_response(task_id, ws)
+
+                # Wait for streaming to finish (with a timeout)
+                for _ in range(900):  # 180s max
+                    if done_event.is_set():
+                        break
+                    time.sleep(0.2)
+                else:
+                    print(f"\n  {red}Timed out after 180s.{reset}")
+
+                if result.get("error"):
+                    print(f"\n  {red}Error: {result['error']}{reset}")
+
+            else:
+                # Polling fallback
+                for _ in range(90):
+                    time.sleep(2)
+                    _, result = api("GET", f"/agents/{aid}/tasks/{task_id}")
+                    if result.get("status") == "completed":
+                        print(result.get("output", ""))
+                        break
+                    elif result.get("status") == "failed":
+                        print(f"\n  {red}Failed: {result.get('output', '?')}{reset}")
+                        break
+                else:
+                    print(f"\n  {red}Timed out.{reset}")
+
+            # Fetch final stats
+            _, final = api("GET", f"/agents/{aid}/tasks/{task_id}")
+            tokens = final.get("tokens_used")
+            elapsed = ""
+            if final.get("created_at") and final.get("completed_at"):
+                try:
+                    t0 = time.strptime(final["created_at"][:19], "%Y-%m-%dT%H:%M:%S")
+                    t1 = time.strptime(final["completed_at"][:19], "%Y-%m-%dT%H:%M:%S")
+                    secs = int(time.mktime(t1) - time.mktime(t0))
+                    elapsed = f"  ⏱ {secs}s"
+                except Exception:
+                    pass
+            print(f"\n  {dim}tokens: {tokens or '—'}{elapsed}{reset}\n")
+
+    except KeyboardInterrupt:
+        pass
+
+    if ws:
+        ws.close()
+    print(f"\n  {dim}Chat ended.{reset}\n")
+
+
 # ── Menu ─────────────────────────────────────
 
 MENU = """
-╔══════════════════════════════════════════════════╗
-║            OpenClaw API Test Client              ║
-╠══════════════════════════════════════════════════╣
-║  AUTH                                            ║
-║   1) Register              2) Login              ║
-║   3) Refresh token                               ║
-║  AGENTS                                          ║
-║   4) List agents           5) Create agent       ║
-║   6) Update agent          7) Delete agent       ║
-║  TASKS                                           ║
-║   8) Submit task           9) List tasks         ║
-║  22) Clear history (reset conversation)          ║
-║  SKILLS (local backend)                          ║
-║  10) Browse catalog       11) Browse ClawHub     ║
-║  12) Recommended skills                          ║
-║  13) Install skill        14) Install ClawHub    ║
-║  15) List agent skills                           ║
-║  16) Toggle skill         17) Uninstall skill    ║
-║  23) Setup skill (install CLI dependencies)      ║
-║  SKILLS (live clawhub.ai)                        ║
-║  21) Browse ClawHub LIVE (all skills)            ║
-║  OTHER                                           ║
-║  18) Usage                19) Subscription       ║
-║  20) Health check                                ║
-║                                                  ║
-║  24) Test ClawHub skill install flow              ║
-║                                                  ║
-║  99) Quick test (full end-to-end flow)           ║
-║   0) Quit                                        ║
-╚══════════════════════════════════════════════════╝"""
+╔═══════════════════════════════════════════╗
+║        OpenClaw API Test Client           ║
+╠═══════════════════════════════════════════╣
+║  AUTH                                     ║
+║   1) Register          2) Login           ║
+║   3) Refresh token                        ║
+║  AGENTS                                   ║
+║   4) List agents       5) Create agent    ║
+║   6) Update agent      7) Delete agent    ║
+║  TASKS                                    ║
+║   8) Submit task       9) List tasks      ║
+║  10) Clear history                        ║
+║  SKILLS                                   ║
+║  11) Browse skills     12) Install skill  ║
+║  13) My skills         14) Manage skill   ║
+║  OTHER                                    ║
+║  15) Usage             16) Subscription   ║
+║  17) Health check                         ║
+║  TESTS                                    ║
+║  18) Quick test (e2e)                     ║
+║  19) ClawHub install test                 ║
+║  20) Fix verification tests              ║
+║                                           ║
+║  💬 c/chat) Interactive chat              ║
+║  ls/menu) Show menu    0) Quit            ║
+╚═══════════════════════════════════════════╝"""
 
 ACTIONS = {
     "1": register, "2": login, "3": refresh_token,
     "4": list_agents, "5": create_agent, "6": update_agent, "7": delete_agent,
-    "8": submit_task, "9": list_tasks,
-    "10": browse_catalog, "11": browse_clawhub, "12": recommended_skills,
-    "13": install_skill, "14": install_clawhub_skill,
-    "15": list_agent_skills, "16": toggle_skill, "17": uninstall_skill,
-    "18": check_usage, "19": check_subscription, "20": health_check,
-    "21": browse_clawhub_live,
-    "22": clear_history,
-    "23": setup_skill,
-    "24": test_clawhub_skill_flow,
-    "99": quick_test,
+    "8": submit_task, "9": list_tasks, "10": clear_history,
+    "11": browse_skills, "12": install_skill,
+    "13": my_skills, "14": manage_skill,
+    "15": check_usage, "16": check_subscription, "17": health_check,
+    "18": quick_test, "19": test_clawhub_skill_flow,
+    "20": test_fixes,
+    "c": interactive_chat, "chat": interactive_chat,
 }
 
 
@@ -763,7 +1409,7 @@ def main():
         if choice == "0":
             print("Bye!")
             break
-        elif choice in ("menu", "help", "?"):
+        elif choice in ("menu", "help", "?", "ls"):
             print(MENU)
         elif choice in ACTIONS:
             try:

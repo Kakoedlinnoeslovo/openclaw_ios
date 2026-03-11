@@ -62,6 +62,16 @@ async function* chatCompletionStream({ agentId, messages, userId }) {
       }
     }
   }
+
+  if (buffer.trim()) {
+    const remaining = buffer.trim();
+    if (remaining.startsWith('data: ')) {
+      const data = remaining.slice(6).trim();
+      if (data !== '[DONE]') {
+        try { yield JSON.parse(data); } catch { /* skip */ }
+      }
+    }
+  }
 }
 
 async function healthCheck() {

@@ -11,6 +11,10 @@ struct HomeView: View {
     @State private var quickChatState: QuickChatState?
     @State private var activeQuickAction: QuickAction?
     @State private var showSettings = false
+    @State private var googleStatus: GlobalOAuthStatus?
+    @State private var isConnectingGoogle = false
+    @State private var googleConnectError: String?
+    @State private var showOAuthSetup = false
 
     private let topActions: [QuickAction] = [.chat, .write, .research, .vision]
     private let featuredTools: [QuickAction] = [.web, .email, .voice]
@@ -20,6 +24,9 @@ struct HomeView: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 24) {
                     headerSection
+                    if showGoogleCard {
+                        googleConnectionCard
+                    }
                     quickActionCards
                     featuredToolsList
                     agentsSection
@@ -52,7 +59,7 @@ struct HomeView: View {
                 NavigationStack {
                     QuickActionInputView(action: action) { message in
                         activeQuickAction = nil
-                        if let agent = agentService.agents.first {
+                        if let agent = agentService.preferredAgent {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                                 quickChatState = QuickChatState(agent: agent, initialMessage: message)
                             }
@@ -73,11 +80,29 @@ struct HomeView: View {
                     SettingsView()
                 }
             }
+            .sheet(isPresented: $showOAuthSetup) {
+                NavigationStack {
+                    GoogleOAuthConfigView(isConfigured: false) {
+                        showOAuthSetup = false
+                        await refreshGoogleStatus()
+                    }
+                }
+            }
+            .alert("Connection Failed", isPresented: Binding(
+                get: { googleConnectError != nil },
+                set: { if !$0 { googleConnectError = nil } }
+            )) {
+                Button("OK") { googleConnectError = nil }
+            } message: {
+                Text(googleConnectError ?? "")
+            }
             .refreshable {
                 try? await agentService.fetchAgents()
+                await refreshGoogleStatus()
             }
             .task {
                 try? await agentService.fetchAgents()
+                await refreshGoogleStatus()
             }
         }
     }
@@ -390,6 +415,118 @@ struct HomeView: View {
         .accessibilityIdentifier("home_empty_agent")
     }
 
+    // MARK: - Google Connection
+
+    private var showGoogleCard: Bool {
+        OAuthService.hasEligibleSkills(provider: .google, agents: agentService.agents)
+    }
+
+    private var isGoogleConnected: Bool {
+        googleStatus?.connected == true
+    }
+
+    private var googleConnectionCard: some View {
+        Button {
+            guard !isGoogleConnected, !isConnectingGoogle else { return }
+            Task { await connectGoogle() }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "envelope.fill")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        LinearGradient(
+                            colors: [Color(red: 0.26, green: 0.52, blue: 0.96), Color(red: 0.18, green: 0.42, blue: 0.90)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 11))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connect Google")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text("Gmail, Calendar & Drive")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if isConnectingGoogle {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if isGoogleConnected {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                        Text("Connected")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundStyle(.green)
+                } else {
+                    Text("Connect")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            LinearGradient(
+                                colors: [Color(red: 0.26, green: 0.52, blue: 0.96), Color(red: 0.18, green: 0.42, blue: 0.90)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(
+                        isGoogleConnected
+                            ? Color.green.opacity(0.2)
+                            : Color(red: 0.26, green: 0.52, blue: 0.96).opacity(0.15),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .accessibilityIdentifier("home_google_connect")
+    }
+
+    private func connectGoogle() async {
+        isConnectingGoogle = true
+        defer { isConnectingGoogle = false }
+
+        do {
+            _ = try await OAuthService.shared.connectAll(
+                provider: .google,
+                agents: agentService.agents
+            )
+            await refreshGoogleStatus()
+        } catch OAuthError.notConfigured {
+            showOAuthSetup = true
+        } catch {
+            if (error as? OAuthError) != nil {
+                googleConnectError = error.localizedDescription
+            }
+        }
+    }
+
+    private func refreshGoogleStatus() async {
+        guard OAuthService.hasEligibleSkills(provider: .google, agents: agentService.agents) else {
+            googleStatus = nil
+            return
+        }
+        googleStatus = try? await OAuthService.shared.checkGlobalStatus(provider: .google)
+    }
+
     // MARK: - Actions
 
     private func handleQuickAction(_ action: QuickAction) {
@@ -397,7 +534,7 @@ struct HomeView: View {
         case .create:
             showCreateAgent = true
         case .chat:
-            if let agent = agentService.agents.first {
+            if let agent = agentService.preferredAgent {
                 quickChatState = QuickChatState(agent: agent, initialMessage: nil)
             } else {
                 showCreateAgent = true

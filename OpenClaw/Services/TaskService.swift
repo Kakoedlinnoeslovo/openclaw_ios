@@ -69,12 +69,20 @@ final class TaskService {
 
     func updateTaskFromStream(taskId: String, content: String?, status: TaskStatus) {
         guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
-        if let content {
-            tasks[index].output = (tasks[index].output ?? "") + content
+        switch status {
+        case .running:
+            if let content {
+                tasks[index].output = (tasks[index].output ?? "") + content
+            }
+        case .completed:
+            tasks[index].completedAt = Date()
+        case .failed:
+            if let content {
+                tasks[index].output = content
+            }
+        default:
+            break
         }
         tasks[index].status = status
-        if status == .completed {
-            tasks[index].completedAt = Date()
-        }
     }
 }

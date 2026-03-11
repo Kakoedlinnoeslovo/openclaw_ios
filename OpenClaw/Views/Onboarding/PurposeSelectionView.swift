@@ -115,10 +115,10 @@ struct PurposeSelectionView: View {
 
                 HStack(spacing: 4) {
                     Text("By proceeding, you accept our")
-                    Button("Terms of Use") {}
+                    Link("Terms of Use", destination: URL(string: "https://openclaw.im/terms")!)
                         .foregroundStyle(theme.accent.opacity(0.7))
                     Text("and")
-                    Button("Privacy Policy") {}
+                    Link("Privacy Policy", destination: URL(string: "https://openclaw.im/privacy")!)
                         .foregroundStyle(theme.accent.opacity(0.7))
                 }
                 .font(.system(size: 10))

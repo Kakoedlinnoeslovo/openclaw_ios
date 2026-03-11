@@ -121,6 +121,42 @@ CREATE TABLE usage_daily (
 
 CREATE INDEX idx_usage_user_date ON usage_daily(user_id, date);
 
+-- OAuth states (CSRF protection for third-party OAuth flows)
+CREATE TABLE oauth_states (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    skill_id VARCHAR(255) NOT NULL,
+    provider VARCHAR(50) NOT NULL,
+    state VARCHAR(255) UNIQUE NOT NULL,
+    code_verifier VARCHAR(255),
+    connect_all BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '10 minutes'
+);
+
+CREATE INDEX idx_oauth_states_state ON oauth_states(state);
+
+-- OAuth tokens (third-party access/refresh tokens per skill)
+CREATE TABLE oauth_tokens (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    skill_id VARCHAR(255) NOT NULL,
+    provider VARCHAR(50) NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    token_type VARCHAR(50) DEFAULT 'Bearer',
+    scope TEXT,
+    expires_at TIMESTAMPTZ,
+    extra JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(agent_id, skill_id, provider)
+);
+
+CREATE INDEX idx_oauth_tokens_agent_skill ON oauth_tokens(agent_id, skill_id);
+
 -- Refresh tokens
 CREATE TABLE refresh_tokens (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -132,6 +168,13 @@ CREATE TABLE refresh_tokens (
 );
 
 CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens(token_hash);
+
+-- App config (key-value store for OAuth credentials, etc.)
+CREATE TABLE app_config (
+    key VARCHAR(255) PRIMARY KEY,
+    value JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 -- Migration helper: add new columns to existing databases.
 -- These are idempotent (DO NOTHING on conflict).
@@ -162,6 +205,55 @@ BEGIN
         WHERE table_name = 'tasks' AND column_name = 'file_ids'
     ) THEN
         ALTER TABLE tasks ADD COLUMN file_ids UUID[] DEFAULT '{}';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'oauth_states'
+    ) THEN
+        CREATE TABLE oauth_states (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            skill_id VARCHAR(255) NOT NULL,
+            provider VARCHAR(50) NOT NULL,
+            state VARCHAR(255) UNIQUE NOT NULL,
+            code_verifier VARCHAR(255),
+            connect_all BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '10 minutes'
+        );
+        CREATE INDEX idx_oauth_states_state ON oauth_states(state);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'oauth_states' AND column_name = 'connect_all'
+    ) THEN
+        ALTER TABLE oauth_states ADD COLUMN connect_all BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'oauth_tokens'
+    ) THEN
+        CREATE TABLE oauth_tokens (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            skill_id VARCHAR(255) NOT NULL,
+            provider VARCHAR(50) NOT NULL,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT,
+            token_type VARCHAR(50) DEFAULT 'Bearer',
+            scope TEXT,
+            expires_at TIMESTAMPTZ,
+            extra JSONB DEFAULT '{}',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(agent_id, skill_id, provider)
+        );
+        CREATE INDEX idx_oauth_tokens_agent_skill ON oauth_tokens(agent_id, skill_id);
     END IF;
 
     IF NOT EXISTS (

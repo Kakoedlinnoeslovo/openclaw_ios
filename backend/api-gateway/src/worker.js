@@ -12,14 +12,113 @@ const { chatCompletionStream } = require('./openclaw-client');
 let pdfParse;
 try { pdfParse = require('pdf-parse'); } catch { pdfParse = null; }
 
+const { setSkillCredentials, openclawAgentId, ensureWorkspaceReady } = require('./provisioner');
+
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const redis = new Redis(process.env.REDIS_URL);
 
 const QUEUE_NAME = 'tasks';
 const HISTORY_LIMIT = 50;
 
+const OAUTH_PROVIDERS = {
+  slack: {
+    token_url: 'https://slack.com/api/oauth.v2.access',
+    token_field: 'SLACK_BOT_TOKEN',
+  },
+  google: {
+    token_url: 'https://oauth2.googleapis.com/token',
+    token_field: 'GOOGLE_ACCESS_TOKEN',
+  },
+  notion: {
+    token_url: 'https://api.notion.com/v1/oauth/token',
+    token_field: 'NOTION_API_KEY',
+  },
+};
+
+async function getOAuthClientCredentials(provider) {
+  const envId = process.env[`${provider.toUpperCase()}_CLIENT_ID`];
+  const envSecret = process.env[`${provider.toUpperCase()}_CLIENT_SECRET`];
+  if (envId && envSecret) return { clientId: envId, clientSecret: envSecret };
+
+  try {
+    const { rows: [row] } = await pool.query(
+      `SELECT value FROM app_config WHERE key = $1`,
+      [`oauth_creds_${provider}`],
+    );
+    if (row?.value?.client_id && row?.value?.client_secret) {
+      return { clientId: row.value.client_id, clientSecret: row.value.client_secret };
+    }
+  } catch { /* table may not exist */ }
+  return null;
+}
+
+async function refreshOAuthTokensForAgent(agentId, userId) {
+  const { rows: tokens } = await pool.query(
+    `SELECT * FROM oauth_tokens WHERE agent_id = $1 AND user_id = $2
+     AND expires_at IS NOT NULL AND expires_at < NOW() + INTERVAL '2 minutes'`,
+    [agentId, userId],
+  );
+
+  for (const tokenRow of tokens) {
+    if (!tokenRow.refresh_token) continue;
+    const providerCfg = OAUTH_PROVIDERS[tokenRow.provider];
+    if (!providerCfg) continue;
+
+    try {
+      const creds = await getOAuthClientCredentials(tokenRow.provider);
+      if (!creds) continue;
+      const { clientId, clientSecret } = creds;
+
+      const tokenParams = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: tokenRow.refresh_token,
+        client_id: clientId,
+        client_secret: clientSecret,
+      });
+
+      const resp = await fetch(providerCfg.token_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: tokenParams.toString(),
+      });
+
+      if (!resp.ok) {
+        console.warn(`[worker] oauth refresh failed for ${tokenRow.provider}:`, await resp.text());
+        continue;
+      }
+
+      const body = await resp.json();
+      const newAccessToken = body.access_token;
+      const newRefreshToken = body.refresh_token || tokenRow.refresh_token;
+      const expiresAt = body.expires_in
+        ? new Date(Date.now() + body.expires_in * 1000)
+        : null;
+
+      await pool.query(
+        `UPDATE oauth_tokens SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = NOW()
+         WHERE id = $4`,
+        [newAccessToken, newRefreshToken, expiresAt, tokenRow.id],
+      );
+
+      setSkillCredentials(userId, agentId, tokenRow.skill_id, {
+        [providerCfg.token_field]: newAccessToken,
+      });
+
+      console.log(`[worker] refreshed ${tokenRow.provider} token for agent=${agentId}`);
+    } catch (err) {
+      console.warn(`[worker] oauth refresh error for ${tokenRow.provider}:`, err.message);
+    }
+  }
+}
+
 const IMAGE_MIME_TYPES = new Set([
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+]);
+
+const BINARY_MIME_TYPES = new Set([
+  'image/heic', 'image/heif',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
 
 function publish(userId, event) {
@@ -63,6 +162,12 @@ async function loadFileContents(fileIds) {
           filename: file.filename,
           mimeType: file.mime_type,
           dataUrl: `data:${file.mime_type};base64,${b64}`,
+        });
+      } else if (BINARY_MIME_TYPES.has(file.mime_type)) {
+        results.push({
+          type: 'text',
+          filename: file.filename,
+          content: `[Binary file: ${file.filename} (${file.mime_type}) — content extraction not supported for this format]`,
         });
       } else if (file.mime_type === 'application/pdf') {
         if (pdfParse) {
@@ -151,12 +256,17 @@ function buildUserMessage(input, fileContents, imageData) {
 const worker = new Worker(
   QUEUE_NAME,
   async (job) => {
-    const { taskId, agentId, openclawAgentId, userId, input, fileIds, imageData } = job.data;
-    console.log(`[worker] processing task=${taskId} agent=${openclawAgentId} files=${(fileIds || []).length}`);
+    const { taskId, agentId, openclawAgentId: ocAgentId, userId, input, fileIds, imageData } = job.data;
+    console.log(`[worker] processing task=${taskId} agent=${ocAgentId} files=${(fileIds || []).length}`);
 
     try {
       await pool.query("UPDATE tasks SET status = 'running' WHERE id = $1", [taskId]);
       publish(userId, { type: 'task:progress', task_id: taskId, content: '' });
+
+      // Patch workspace AGENTS.md + .env for agents created before the fix
+      ensureWorkspaceReady(ocAgentId);
+
+      await refreshOAuthTokensForAgent(agentId, userId);
 
       const fileContents = await loadFileContents(fileIds);
       const userContent = buildUserMessage(input, fileContents, imageData);
@@ -169,7 +279,7 @@ const worker = new Worker(
       let lastUsage = null;
 
       for await (const chunk of chatCompletionStream({
-        agentId: openclawAgentId,
+        agentId: ocAgentId,
         messages,
         userId,
       })) {
@@ -234,7 +344,7 @@ const worker = new Worker(
         [userId, tokensUsed],
       );
 
-      publish(userId, { type: 'task:complete', task_id: taskId, content: fullOutput });
+      publish(userId, { type: 'task:complete', task_id: taskId });
       return { taskId, status: 'completed' };
     } catch (err) {
       console.error(`[worker] task=${taskId} failed:`, err.message);

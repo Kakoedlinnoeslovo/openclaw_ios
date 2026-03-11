@@ -14,6 +14,15 @@ struct SkillCardView: View {
         case .communication: .cyan
         case .automation: .purple
         case .development: .teal
+        case .aiMl: .mint
+        case .utility: .gray
+        case .web: .blue
+        case .science: .green
+        case .media: .red
+        case .social: .cyan
+        case .finance: .green
+        case .location: .orange
+        case .business: .brown
         }
     }
 
@@ -95,7 +104,7 @@ struct SkillCardView: View {
 
     private func formatCount(_ count: Int) -> String {
         if count >= 1000 {
-            return "\(count / 1000)k"
+            return "\(count / 1000).\((count % 1000) / 100)k"
         }
         return "\(count)"
     }

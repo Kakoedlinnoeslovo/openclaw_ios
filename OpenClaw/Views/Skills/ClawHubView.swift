@@ -9,17 +9,25 @@ struct ClawHubView: View {
 
     @State private var agentService = AgentService.shared
     @State private var skillService = SkillService.shared
+    @State private var oauthService = OAuthService.shared
     @State private var searchText = ""
     @State private var selectedCategory: SkillCategory?
     @State private var selectedSkill: Skill?
 
     @State private var installState: InstallState = .idle
     @State private var installingSlug: String?
+    @State private var installedSkillId: String?
     @State private var installError: String?
     @State private var installWarning: String?
     @State private var setupRequirements: [SkillSetupRequirement] = []
+    @State private var oauthProvider: OAuthProvider?
     @State private var showAgentPicker = false
     @State private var pendingSkill: Skill?
+    @State private var targetAgentId: String?
+    @State private var credentialInputs: [String: String] = [:]
+    @State private var isSavingCredentials = false
+    @State private var credentialsSaved = false
+    @State private var showOAuthSetup = false
 
     var body: some View {
         NavigationStack {
@@ -58,6 +66,13 @@ struct ClawHubView: View {
             }
             .sheet(isPresented: $showAgentPicker) {
                 agentPickerSheet
+            }
+            .sheet(isPresented: $showOAuthSetup) {
+                NavigationStack {
+                    GoogleOAuthConfigView(isConfigured: false) {
+                        showOAuthSetup = false
+                    }
+                }
             }
             .overlay {
                 if installState == .installing || installState == .success || installState == .failed || installState == .needsSetup {
@@ -209,14 +224,27 @@ struct ClawHubView: View {
         guard let slug = skill.slug else { return }
         installState = .installing
         installingSlug = slug
+        installedSkillId = nil
         installError = nil
         installWarning = nil
+        oauthProvider = nil
+        targetAgentId = agentId
+        credentialInputs = [:]
+        credentialsSaved = false
 
         Task {
             do {
                 let result = try await agentService.installClawHubSkill(agentId: agentId, slug: slug)
+                agentService.lastActiveAgentId = agentId
                 installWarning = result.installWarning
-                if result.setupRequired == true, let reqs = result.setupRequirements, !reqs.isEmpty {
+
+                let skillId = slug.split(separator: "/").last.map(String.init) ?? slug
+                installedSkillId = skillId
+
+                if let provider = OAuthProvider.provider(forSkillId: skillId) {
+                    oauthProvider = provider
+                    installState = .needsSetup
+                } else if result.setupRequired == true, let reqs = result.setupRequirements, !reqs.isEmpty {
                     setupRequirements = reqs
                     installState = .needsSetup
                 } else {
@@ -230,6 +258,31 @@ struct ClawHubView: View {
             } catch {
                 installError = error.localizedDescription
                 installState = .failed
+            }
+        }
+    }
+
+    // MARK: - OAuth Connect
+
+    private func connectOAuth(provider: OAuthProvider, agentId: String) {
+        guard let skillId = installedSkillId else { return }
+        Task {
+            do {
+                let success = try await oauthService.startOAuthFlow(
+                    provider: provider,
+                    agentId: agentId,
+                    skillId: skillId
+                )
+                if success {
+                    withAnimation {
+                        installState = .success
+                        oauthProvider = nil
+                    }
+                }
+            } catch OAuthError.notConfigured {
+                showOAuthSetup = true
+            } catch {
+                // Error is stored in oauthService.lastError
             }
         }
     }
@@ -325,35 +378,48 @@ struct ClawHubView: View {
                             }
                         }
                     case .needsSetup:
-                        VStack(spacing: 12) {
-                            Image(systemName: "gearshape.circle.fill")
-                                .font(.system(size: 44))
-                                .foregroundStyle(.orange)
-                            Text("Setup Required")
-                                .font(.headline)
-                            Text("This skill needs configuration before it can work.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
+                        if let provider = oauthProvider, let targetAgentId = agentId ?? agentService.agents.first?.id {
+                            VStack(spacing: 16) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 44))
+                                    .foregroundStyle(.green)
+                                Text("Skill installed!")
+                                    .font(.headline)
+                                Text("Connect your \(provider.displayName) account to get started.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
 
-                            ForEach(setupRequirements) { req in
-                                HStack(spacing: 8) {
-                                    Image(systemName: req.sensitive ? "key.fill" : "wrench.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(req.label)
-                                            .font(.caption.weight(.medium))
-                                        Text(req.description)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                Button {
+                                    connectOAuth(provider: provider, agentId: targetAgentId)
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        if oauthService.isAuthenticating {
+                                            ProgressView()
+                                                .tint(.white)
+                                        } else {
+                                            Image(systemName: provider.iconName)
+                                            Text("Connect to \(provider.displayName)")
+                                        }
                                     }
-                                    Spacer()
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                                    .background(.blue)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
                                 }
-                                .padding(10)
-                                .background(.quaternary.opacity(0.5))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .disabled(oauthService.isAuthenticating)
+
+                                if let error = oauthService.lastError {
+                                    Text(error)
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                        .multilineTextAlignment(.center)
+                                }
                             }
+                        } else {
+                            credentialSetupSection
                         }
                     case .failed:
                         VStack(spacing: 12) {
@@ -382,14 +448,26 @@ struct ClawHubView: View {
                             installError = nil
                             installWarning = nil
                             setupRequirements = []
+                            oauthProvider = nil
+                            installedSkillId = nil
+                            targetAgentId = nil
+                            credentialInputs = [:]
+                            credentialsSaved = false
                         }
                     } label: {
-                        Text(installState == .failed ? "Dismiss" : "Done")
+                        let label: String = if installState == .failed {
+                            "Dismiss"
+                        } else if oauthProvider != nil || (!setupRequirements.isEmpty && !credentialsSaved) {
+                            "Skip for Now"
+                        } else {
+                            "Done"
+                        }
+                        Text(label)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
-                            .background(installState == .success ? Color.green : installState == .needsSetup ? .orange : theme.accent)
+                            .background(installState == .success || credentialsSaved ? Color.green : installState == .needsSetup ? .orange : theme.accent)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
                 }
@@ -403,6 +481,144 @@ struct ClawHubView: View {
             .padding(.bottom, 8)
         }
         .background(Color.black.opacity(0.3).ignoresSafeArea())
+    }
+
+    // MARK: - Credential Setup
+
+    private var credentialSetupSection: some View {
+        VStack(spacing: 12) {
+            if credentialsSaved {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.green)
+                Text("Configured!")
+                    .font(.headline)
+                Text("Credentials saved. The skill is ready to use.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else {
+                Image(systemName: "key.circle.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.orange)
+                Text("Setup Required")
+                    .font(.headline)
+                Text("Enter the credentials this skill needs to work.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                let envRequirements = setupRequirements.filter { $0.type == "env" }
+                ForEach(envRequirements) { req in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(req.label)
+                            .font(.caption.weight(.medium))
+
+                        if req.sensitive {
+                            SecureField(req.key, text: binding(for: req.key))
+                                .textFieldStyle(.roundedBorder)
+                                .font(.subheadline.monospaced())
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        } else {
+                            TextField(req.key, text: binding(for: req.key))
+                                .textFieldStyle(.roundedBorder)
+                                .font(.subheadline.monospaced())
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        }
+                    }
+                }
+
+                let nonEnvRequirements = setupRequirements.filter { $0.type != "env" }
+                ForEach(nonEnvRequirements) { req in
+                    HStack(spacing: 8) {
+                        Image(systemName: "wrench.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(req.label)
+                                .font(.caption.weight(.medium))
+                            Text(req.description)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(.quaternary.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
+                if !envRequirements.isEmpty {
+                    Button {
+                        saveCredentials()
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isSavingCredentials {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "checkmark.shield.fill")
+                                Text("Save & Configure")
+                            }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(hasAllCredentials ? .blue : .gray)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .disabled(!hasAllCredentials || isSavingCredentials)
+                }
+            }
+        }
+    }
+
+    private var hasAllCredentials: Bool {
+        let envKeys = setupRequirements.filter { $0.type == "env" }.map(\.key)
+        return envKeys.allSatisfy { key in
+            guard let value = credentialInputs[key] else { return false }
+            return !value.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
+
+    private func binding(for key: String) -> Binding<String> {
+        Binding(
+            get: { credentialInputs[key, default: ""] },
+            set: { credentialInputs[key] = $0 }
+        )
+    }
+
+    private func saveCredentials() {
+        guard let skillId = installedSkillId,
+              let agentId = targetAgentId ?? agentId ?? agentService.agents.first?.id else { return }
+
+        let envCredentials = credentialInputs
+            .filter { key, value in
+                setupRequirements.contains(where: { $0.type == "env" && $0.key == key })
+                && !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            .mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard !envCredentials.isEmpty else { return }
+
+        isSavingCredentials = true
+        Task {
+            do {
+                try await agentService.setSkillCredentials(
+                    agentId: agentId,
+                    skillId: skillId,
+                    credentials: envCredentials
+                )
+                withAnimation {
+                    credentialsSaved = true
+                }
+            } catch {
+                installError = error.localizedDescription
+            }
+            isSavingCredentials = false
+        }
     }
 }
 
@@ -426,12 +642,19 @@ struct ClawHubSkillDetailView: View {
     var agentId: String?
 
     @State private var agentService = AgentService.shared
+    @State private var oauthService = OAuthService.shared
     @State private var isInstalling = false
     @State private var installed = false
+    @State private var oauthConnected = false
     @State private var showAgentPicker = false
     @State private var installError: String?
     @State private var setupRequirements: [SkillSetupRequirement] = []
-    @State private var showSetupInfo = false
+    @State private var showSetupSheet = false
+    @State private var credentialInputs: [String: String] = [:]
+    @State private var isSavingCredentials = false
+    @State private var credentialsSaved = false
+    @State private var installedAgentId: String?
+    @State private var showOAuthSetup = false
 
     var body: some View {
         NavigationStack {
@@ -441,6 +664,10 @@ struct ClawHubSkillDetailView: View {
                     statsRow
                     descriptionSection
                     installButton
+
+                    if installed && !setupRequirements.isEmpty && oauthProvider == nil {
+                        credentialSetupInline
+                    }
                 }
                 .padding()
             }
@@ -454,6 +681,13 @@ struct ClawHubSkillDetailView: View {
             .sheet(isPresented: $showAgentPicker) {
                 agentPickerSheet
             }
+            .sheet(isPresented: $showOAuthSetup) {
+                NavigationStack {
+                    GoogleOAuthConfigView(isConfigured: false) {
+                        showOAuthSetup = false
+                    }
+                }
+            }
             .alert("Installation Failed", isPresented: .constant(installError != nil)) {
                 Button("OK") { installError = nil }
             } message: {
@@ -464,6 +698,9 @@ struct ClawHubSkillDetailView: View {
                     try? await agentService.fetchAgents()
                 }
                 checkInstalledState()
+                if installed, let targetAgentId = agentId ?? agentService.agents.first?.id {
+                    await checkOAuthStatus(agentId: targetAgentId)
+                }
             }
         }
     }
@@ -564,6 +801,12 @@ struct ClawHubSkillDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var oauthProvider: OAuthProvider? {
+        guard let slug = skill.slug else { return nil }
+        let skillId = slug.split(separator: "/").last.map(String.init) ?? slug
+        return OAuthProvider.provider(forSkillId: skillId)
+    }
+
     private var installButton: some View {
         Group {
             if !installed {
@@ -585,12 +828,52 @@ struct ClawHubSkillDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.orange)
                 .disabled(isInstalling)
+            } else if let provider = oauthProvider, !oauthConnected {
+                VStack(spacing: 12) {
+                    Label("Installed", systemImage: "checkmark.circle.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(.green)
+
+                    Button {
+                        connectOAuth(provider: provider)
+                    } label: {
+                        HStack(spacing: 8) {
+                            if oauthService.isAuthenticating {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: provider.iconName)
+                                Text("Connect to \(provider.displayName)")
+                            }
+                        }
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                    .disabled(oauthService.isAuthenticating)
+
+                    if let error = oauthService.lastError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.center)
+                    }
+                }
             } else {
-                Label("Installed", systemImage: "checkmark.circle.fill")
-                    .font(.headline)
-                    .foregroundStyle(.green)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
+                VStack(spacing: 4) {
+                    Label("Installed", systemImage: "checkmark.circle.fill")
+                        .font(.headline)
+                        .foregroundStyle(.green)
+                    if oauthConnected {
+                        Label("Connected", systemImage: "link.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
             }
         }
     }
@@ -664,19 +947,167 @@ struct ClawHubSkillDetailView: View {
         guard let slug = skill.slug else { return }
         isInstalling = true
         installError = nil
+        installedAgentId = agentId
+        credentialInputs = [:]
+        credentialsSaved = false
 
         Task {
             do {
                 let result = try await agentService.installClawHubSkill(agentId: agentId, slug: slug)
+                agentService.lastActiveAgentId = agentId
                 if result.setupRequired == true, let reqs = result.setupRequirements, !reqs.isEmpty {
                     setupRequirements = reqs
-                    showSetupInfo = true
                 }
                 installed = true
+                await checkOAuthStatus(agentId: agentId)
             } catch {
                 installError = error.localizedDescription
             }
             isInstalling = false
+        }
+    }
+
+    private func connectOAuth(provider: OAuthProvider) {
+        guard let targetAgentId = agentId ?? agentService.agents.first?.id,
+              let slug = skill.slug else { return }
+        let skillId = slug.split(separator: "/").last.map(String.init) ?? slug
+
+        Task {
+            do {
+                let success = try await oauthService.startOAuthFlow(
+                    provider: provider,
+                    agentId: targetAgentId,
+                    skillId: skillId
+                )
+                if success {
+                    oauthConnected = true
+                }
+            } catch OAuthError.notConfigured {
+                showOAuthSetup = true
+            } catch {
+                // Error is stored in oauthService.lastError
+            }
+        }
+    }
+
+    private func checkOAuthStatus(agentId: String) async {
+        guard let slug = skill.slug else { return }
+        let skillId = slug.split(separator: "/").last.map(String.init) ?? slug
+        guard OAuthProvider.provider(forSkillId: skillId) != nil else { return }
+
+        if let status = try? await oauthService.checkStatus(agentId: agentId, skillId: skillId) {
+            oauthConnected = status.connected
+        }
+    }
+
+    // MARK: - Credential Setup (Detail View)
+
+    private var credentialSetupInline: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(credentialsSaved ? "Configured" : "Setup Required",
+                  systemImage: credentialsSaved ? "checkmark.shield.fill" : "key.circle.fill")
+                .font(.headline)
+                .foregroundStyle(credentialsSaved ? .green : .orange)
+
+            if !credentialsSaved {
+                Text("Enter the credentials this skill needs to work.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            let envRequirements = setupRequirements.filter { $0.type == "env" }
+            ForEach(envRequirements) { req in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(req.label)
+                        .font(.caption.weight(.medium))
+                    if req.sensitive {
+                        SecureField(req.key, text: detailBinding(for: req.key))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.subheadline.monospaced())
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .disabled(credentialsSaved)
+                    } else {
+                        TextField(req.key, text: detailBinding(for: req.key))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.subheadline.monospaced())
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .disabled(credentialsSaved)
+                    }
+                }
+            }
+
+            if !envRequirements.isEmpty && !credentialsSaved {
+                Button {
+                    saveDetailCredentials()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSavingCredentials {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: "checkmark.shield.fill")
+                            Text("Save & Configure")
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(detailHasAllCredentials ? .blue : .gray)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .disabled(!detailHasAllCredentials || isSavingCredentials)
+            }
+        }
+        .padding()
+        .background(.quaternary.opacity(0.3))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var detailHasAllCredentials: Bool {
+        let envKeys = setupRequirements.filter { $0.type == "env" }.map(\.key)
+        return envKeys.allSatisfy { key in
+            guard let value = credentialInputs[key] else { return false }
+            return !value.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
+
+    private func detailBinding(for key: String) -> Binding<String> {
+        Binding(
+            get: { credentialInputs[key, default: ""] },
+            set: { credentialInputs[key] = $0 }
+        )
+    }
+
+    private func saveDetailCredentials() {
+        guard let slug = skill.slug else { return }
+        let skillId = slug.split(separator: "/").last.map(String.init) ?? slug
+        guard let targetAgentId = installedAgentId ?? agentId ?? agentService.agents.first?.id else { return }
+
+        let envCredentials = credentialInputs
+            .filter { key, value in
+                setupRequirements.contains(where: { $0.type == "env" && $0.key == key })
+                && !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            .mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard !envCredentials.isEmpty else { return }
+
+        isSavingCredentials = true
+        Task {
+            do {
+                try await agentService.setSkillCredentials(
+                    agentId: targetAgentId,
+                    skillId: skillId,
+                    credentials: envCredentials
+                )
+                withAnimation {
+                    credentialsSaved = true
+                }
+            } catch {
+                installError = error.localizedDescription
+            }
+            isSavingCredentials = false
         }
     }
 

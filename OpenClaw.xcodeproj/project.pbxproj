@@ -47,6 +47,9 @@
 		A10000010000000000000026 /* ClawHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000026 /* ClawHubView.swift */; };
 		A10000010000000000000027 /* NotificationPromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000027 /* NotificationPromptView.swift */; };
 		A10000010000000000000028 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000028 /* HistoryView.swift */; };
+		A10000010000000000000029 /* OAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000029 /* OAuthService.swift */; };
+		A1000001000000000000002A /* DocumentPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002A /* DocumentPicker.swift */; };
+		A1000001000000000000002B /* SpeechRecognitionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002B /* SpeechRecognitionService.swift */; };
 		B10000010000000000000001 /* OpenClawUITestBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* OpenClawUITestBase.swift */; };
 		B10000010000000000000002 /* OnboardingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* OnboardingFlowTests.swift */; };
 		B10000010000000000000003 /* PaywallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* PaywallTests.swift */; };
@@ -56,6 +59,16 @@
 		B10000010000000000000007 /* TaskChatViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000007 /* TaskChatViewTests.swift */; };
 		B10000010000000000000008 /* SettingsViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000008 /* SettingsViewTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B90000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000010000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A60000010000000000000001;
+			remoteInfo = OpenClaw;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		A20000010000000000000001 /* OpenClawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawApp.swift; sourceTree = "<group>"; };
@@ -98,6 +111,9 @@
 		A20000010000000000000026 /* ClawHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClawHubView.swift; sourceTree = "<group>"; };
 		A20000010000000000000027 /* NotificationPromptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPromptView.swift; sourceTree = "<group>"; };
 		A20000010000000000000028 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		A20000010000000000000029 /* OAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthService.swift; sourceTree = "<group>"; };
+		A2000001000000000000002A /* DocumentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPicker.swift; sourceTree = "<group>"; };
+		A2000001000000000000002B /* SpeechRecognitionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognitionService.swift; sourceTree = "<group>"; };
 		A30000010000000000000001 /* OpenClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000010000000000000001 /* OpenClawUITestBase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawUITestBase.swift; sourceTree = "<group>"; };
 		B20000010000000000000002 /* OnboardingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlowTests.swift; sourceTree = "<group>"; };
@@ -126,24 +142,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
-
-/* Begin PBXContainerItemProxy section */
-		B90000010000000000000001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = A90000010000000000000001 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = A60000010000000000000001;
-			remoteInfo = OpenClaw;
-		};
-/* End PBXContainerItemProxy section */
-
-/* Begin PBXTargetDependency section */
-		BA0000010000000000000001 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = A60000010000000000000001 /* OpenClaw */;
-			targetProxy = B90000010000000000000001 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
 
 /* Begin PBXGroup section */
 		A50000010000000000000001 = {
@@ -200,6 +198,8 @@
 				A2000001000000000000000C /* TaskService.swift */,
 				A2000001000000000000000D /* SubscriptionService.swift */,
 				A2000001000000000000000E /* WebSocketManager.swift */,
+				A20000010000000000000029 /* OAuthService.swift */,
+				A2000001000000000000002B /* SpeechRecognitionService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -286,6 +286,7 @@
 				A2000001000000000000001A /* AgentCardView.swift */,
 				A2000001000000000000001B /* SkillCardView.swift */,
 				A2000001000000000000001C /* TaskBubbleView.swift */,
+				A2000001000000000000002A /* DocumentPicker.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -452,6 +453,9 @@
 				A10000010000000000000026 /* ClawHubView.swift in Sources */,
 				A10000010000000000000027 /* NotificationPromptView.swift in Sources */,
 				A10000010000000000000028 /* HistoryView.swift in Sources */,
+				A10000010000000000000029 /* OAuthService.swift in Sources */,
+				A1000001000000000000002A /* DocumentPicker.swift in Sources */,
+				A1000001000000000000002B /* SpeechRecognitionService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -471,6 +475,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BA0000010000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A60000010000000000000001 /* OpenClaw */;
+			targetProxy = B90000010000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A80000010000000000000010 /* Debug */ = {
@@ -531,12 +543,17 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = OpenClaw/OpenClaw.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RJWF6M2874;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OpenClaw/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OpenClaw;
+				INFOPLIST_KEY_NSCameraUsageDescription = "OpenClaw needs camera access for Vision AI to analyze images in real time.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OpenClaw needs microphone access to transcribe your voice into text for chat.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "OpenClaw needs access to your photo library to attach images to your AI conversations.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "OpenClaw uses speech recognition to convert your voice into text messages.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -547,8 +564,9 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = ai.openclaw.app;
+				PRODUCT_BUNDLE_IDENTIFIER = aiapp2.openclaw.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -563,12 +581,17 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = OpenClaw/OpenClaw.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RJWF6M2874;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OpenClaw/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OpenClaw;
+				INFOPLIST_KEY_NSCameraUsageDescription = "OpenClaw needs camera access for Vision AI to analyze images in real time.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OpenClaw needs microphone access to transcribe your voice into text for chat.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "OpenClaw needs access to your photo library to attach images to your AI conversations.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "OpenClaw uses speech recognition to convert your voice into text messages.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -579,8 +602,9 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = ai.openclaw.app;
+				PRODUCT_BUNDLE_IDENTIFIER = aiapp2.openclaw.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;

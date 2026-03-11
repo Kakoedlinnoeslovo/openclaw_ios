@@ -12,11 +12,12 @@ const Redis = require('ioredis');
 
 const { healthCheck: ocHealthCheck } = require('./openclaw-client');
 const {
-  ensureBaseConfig, provisionAgent, deprovisionAgent,
+  ensureBaseConfig, provisionAgent, deprovisionAgent, updateAgentConfig,
   installSkill, uninstallSkill, installStarterSkills,
   setSkillEnabled, getSkillConfig, setSkillConfig,
   installClawHubSkill, setSkillCredentials, extractInstallCommands,
-  openclawAgentId, PERSONA_RECOMMENDATIONS, VALID_MODELS,
+  detectSetupRequirements, parseSkillMd,
+  openclawAgentId, ensureAgentsMdPatched, PERSONA_RECOMMENDATIONS, VALID_MODELS,
 } = require('./provisioner');
 const { createWSRelay } = require('./ws-relay');
 
@@ -25,11 +26,118 @@ pg.types.setTypeParser(1184, (val) =>
   new Date(val).toISOString().replace(/\.\d{3}Z$/, 'Z'),
 );
 
+// ──────────────────────────────────────────────
+// OAuth provider configuration
+// ──────────────────────────────────────────────
+
+const OAUTH_REDIRECT_BASE = process.env.OAUTH_REDIRECT_BASE || 'http://localhost:3000';
+
+const OAUTH_PROVIDER_DEFAULTS = {
+  slack: {
+    authorize_url: 'https://slack.com/oauth/v2/authorize',
+    token_url: 'https://slack.com/api/oauth.v2.access',
+    scopes: 'channels:read,channels:history,chat:write,users:read,groups:read,im:read',
+    skill_ids: ['slack-assistant', 'slack-integration',
+                'clawhub-community-slack-assistant', 'clawhub-community-slack-integration'],
+    token_field: 'SLACK_BOT_TOKEN',
+    env_client_id: 'SLACK_CLIENT_ID',
+    env_client_secret: 'SLACK_CLIENT_SECRET',
+    extract_token: (body) => ({
+      access_token: body.access_token || body.authed_user?.access_token,
+      refresh_token: body.refresh_token || null,
+      scope: body.scope,
+      extra: { team: body.team, bot_user_id: body.bot_user_id },
+    }),
+  },
+  google: {
+    authorize_url: 'https://accounts.google.com/o/oauth2/v2/auth',
+    token_url: 'https://oauth2.googleapis.com/token',
+    scopes: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.readonly',
+    extra_params: { access_type: 'offline', prompt: 'consent' },
+    skill_ids: ['gog', 'clawhub-community-gog', 'calendar-planner'],
+    token_field: 'GOOGLE_ACCESS_TOKEN',
+    env_client_id: 'GOOGLE_CLIENT_ID',
+    env_client_secret: 'GOOGLE_CLIENT_SECRET',
+    extract_token: (body) => ({
+      access_token: body.access_token,
+      refresh_token: body.refresh_token || null,
+      expires_in: body.expires_in,
+      scope: body.scope,
+    }),
+  },
+  notion: {
+    authorize_url: 'https://api.notion.com/v1/oauth/authorize',
+    token_url: 'https://api.notion.com/v1/oauth/token',
+    scopes: '',
+    auth_method: 'basic',
+    owner_type: 'user',
+    skill_ids: ['notion-sync', 'clawhub-community-notion-sync'],
+    token_field: 'NOTION_API_KEY',
+    env_client_id: 'NOTION_CLIENT_ID',
+    env_client_secret: 'NOTION_CLIENT_SECRET',
+    extract_token: (body) => ({
+      access_token: body.access_token,
+      refresh_token: null,
+      extra: { workspace_id: body.workspace_id, workspace_name: body.workspace_name },
+    }),
+  },
+};
+
+// In-memory cache of DB-stored OAuth credentials; refreshed on save.
+let _dbOAuthConfig = {};
+
+async function loadOAuthConfigFromDB() {
+  try {
+    const { rows } = await pool.query(
+      `SELECT key, value FROM app_config WHERE key LIKE 'oauth_creds_%'`,
+    );
+    const cfg = {};
+    for (const row of rows) {
+      const provider = row.key.replace('oauth_creds_', '');
+      cfg[provider] = row.value;
+    }
+    _dbOAuthConfig = cfg;
+  } catch {
+    // table might not exist yet during first startup
+  }
+}
+
+function getOAuthProvider(name) {
+  const defaults = OAUTH_PROVIDER_DEFAULTS[name];
+  if (!defaults) return null;
+  const dbCreds = _dbOAuthConfig[name] || {};
+  return {
+    ...defaults,
+    client_id: dbCreds.client_id || process.env[defaults.env_client_id],
+    client_secret: dbCreds.client_secret || process.env[defaults.env_client_secret],
+  };
+}
+
+// Backwards-compatible object for oauthProviderForSkill lookups
+const OAUTH_PROVIDERS = new Proxy(OAUTH_PROVIDER_DEFAULTS, {
+  get(target, prop) {
+    if (typeof prop === 'string' && prop in target) return getOAuthProvider(prop);
+    return Reflect.get(target, prop);
+  },
+});
+
+function oauthProviderForSkill(skillId) {
+  for (const [name, cfg] of Object.entries(OAUTH_PROVIDERS)) {
+    if (cfg.skill_ids.some(id => skillId.includes(id))) return name;
+  }
+  return null;
+}
+
 const app = express();
+app.disable('etag');
 app.use(express.json({ limit: '30mb' }));
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET environment variable is required');
+  process.exit(1);
+}
 const TASK_QUEUE = 'tasks';
 
 const taskQueue = new Queue(TASK_QUEUE, {
@@ -37,6 +145,89 @@ const taskQueue = new Queue(TASK_QUEUE, {
 });
 
 ensureBaseConfig();
+
+async function ensureSchema() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS files (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+        filename VARCHAR(255) NOT NULL,
+        mime_type VARCHAR(100) NOT NULL,
+        size_bytes BIGINT NOT NULL,
+        storage_path TEXT NOT NULL,
+        source VARCHAR(20) NOT NULL DEFAULT 'upload',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_files_user ON files(user_id);
+      CREATE INDEX IF NOT EXISTS idx_files_task ON files(task_id);
+
+      CREATE TABLE IF NOT EXISTS oauth_states (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        skill_id VARCHAR(255) NOT NULL,
+        provider VARCHAR(50) NOT NULL,
+        state VARCHAR(255) UNIQUE NOT NULL,
+        code_verifier VARCHAR(255),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '10 minutes'
+      );
+      CREATE INDEX IF NOT EXISTS idx_oauth_states_state ON oauth_states(state);
+
+      CREATE TABLE IF NOT EXISTS oauth_tokens (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        skill_id VARCHAR(255) NOT NULL,
+        provider VARCHAR(50) NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        token_type VARCHAR(50) DEFAULT 'Bearer',
+        scope TEXT,
+        expires_at TIMESTAMPTZ,
+        extra JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(agent_id, skill_id, provider)
+      );
+      CREATE INDEX IF NOT EXISTS idx_oauth_tokens_agent_skill ON oauth_tokens(agent_id, skill_id);
+
+      CREATE TABLE IF NOT EXISTS app_config (
+        key VARCHAR(255) PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    const migrations = [
+      { table: 'tasks',        column: 'file_ids',    sql: "ALTER TABLE tasks ADD COLUMN file_ids UUID[] DEFAULT '{}'" },
+      { table: 'agent_skills', column: 'enabled',     sql: 'ALTER TABLE agent_skills ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT true' },
+      { table: 'agent_skills', column: 'source',      sql: "ALTER TABLE agent_skills ADD COLUMN source VARCHAR(20) NOT NULL DEFAULT 'curated'" },
+      { table: 'agent_skills', column: 'config',      sql: "ALTER TABLE agent_skills ADD COLUMN config JSONB DEFAULT '{}'" },
+      { table: 'oauth_states', column: 'connect_all', sql: 'ALTER TABLE oauth_states ADD COLUMN connect_all BOOLEAN NOT NULL DEFAULT FALSE' },
+    ];
+    for (const m of migrations) {
+      const { rows } = await client.query(
+        `SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`,
+        [m.table, m.column],
+      );
+      if (rows.length === 0) await client.query(m.sql);
+    }
+
+    await client.query('COMMIT');
+    console.log('Schema migrations applied successfully');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Schema migration failed:', err);
+    process.exit(1);
+  } finally {
+    client.release();
+  }
+}
 
 const UPLOADS_ROOT = path.join(process.env.OPENCLAW_HOME || '/openclaw-home', 'uploads');
 fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
@@ -79,6 +270,14 @@ async function storeRefreshToken(userId, token) {
   await pool.query(
     'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
     [userId, hash, expiresAt],
+  );
+  // Keep at most 10 active refresh tokens per user (remove oldest beyond that)
+  await pool.query(
+    `DELETE FROM refresh_tokens WHERE id IN (
+       SELECT id FROM refresh_tokens WHERE user_id = $1
+       ORDER BY created_at DESC OFFSET 10
+     )`,
+    [userId],
   );
 }
 
@@ -127,6 +326,28 @@ async function agentWithSkills(agentId) {
   };
 }
 
+// Clear ALL OpenClaw session state so the gateway re-discovers skills and
+// reloads env vars on the next chat completion request.  Previous version
+// only removed .jsonl files; the gateway can cache session state in other
+// formats, so we nuke the entire sessions directory.
+function clearAgentSessions(userId, agentId) {
+  const ocId = openclawAgentId(userId, agentId);
+  const OC_HOME = process.env.OPENCLAW_HOME || '/openclaw-home';
+  const sessionsDir = path.join(OC_HOME, 'agents', ocId, 'sessions');
+  try {
+    if (fs.existsSync(sessionsDir)) {
+      const before = fs.readdirSync(sessionsDir).length;
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      console.log(`[sessions] cleared ${before} file(s) for ${ocId}`);
+    } else {
+      console.log(`[sessions] no sessions dir for ${ocId} — nothing to clear`);
+    }
+  } catch (err) {
+    console.warn('[sessions] clear failed for', ocId, err.message);
+  }
+}
+
 // Tier-based limits
 const TIER_LIMITS = {
   free:  { agents: -1, dailyTasks: -1, skills: -1, tokens: -1 },
@@ -157,6 +378,43 @@ function authenticate(req, res, next) {
   }
 }
 
+// Simple in-memory rate limiter (per-IP sliding window)
+function rateLimit({ windowMs = 60_000, max = 30, message = 'Too many requests, try again later' } = {}) {
+  const hits = new Map();
+  const sweep = setInterval(() => hits.clear(), windowMs);
+  if (sweep.unref) sweep.unref();
+  return (req, res, next) => {
+    const key = req.ip || req.socket.remoteAddress;
+    const count = (hits.get(key) || 0) + 1;
+    hits.set(key, count);
+    if (count > max) return res.status(429).json({ error: message });
+    next();
+  };
+}
+
+const authLimiter = rateLimit({ windowMs: 60_000, max: 20, message: 'Too many auth attempts, try again later' });
+
+// Admin authorization — only allow configured admin users or the first registered user
+const ADMIN_USER_IDS = process.env.ADMIN_USER_IDS
+  ? process.env.ADMIN_USER_IDS.split(',').map(s => s.trim()).filter(Boolean)
+  : [];
+
+async function authenticateAdmin(req, res, next) {
+  if (ADMIN_USER_IDS.length > 0) {
+    if (!ADMIN_USER_IDS.includes(req.userId)) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    return next();
+  }
+  const { rows: [first] } = await pool.query(
+    'SELECT id FROM users ORDER BY created_at ASC LIMIT 1',
+  );
+  if (!first || first.id !== req.userId) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+}
+
 // Verify the agent belongs to the authenticated user
 async function verifyAgentOwnership(req, res, next) {
   const agentId = req.params.agentId || req.params.id;
@@ -174,7 +432,7 @@ async function verifyAgentOwnership(req, res, next) {
 // Auth routes
 // ──────────────────────────────────────────────
 
-app.post('/auth/register', async (req, res) => {
+app.post('/auth/register', authLimiter, async (req, res) => {
   try {
     const { email, display_name, password } = req.body;
     if (!email || !password)
@@ -199,7 +457,7 @@ app.post('/auth/register', async (req, res) => {
   }
 });
 
-app.post('/auth/login', async (req, res) => {
+app.post('/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password)
@@ -221,27 +479,82 @@ app.post('/auth/login', async (req, res) => {
   }
 });
 
-app.post('/auth/apple', async (req, res) => {
+// Apple JWKS cache for identity token verification
+let _appleJWKS = null;
+let _appleJWKSFetchedAt = 0;
+const APPLE_JWKS_TTL = 60 * 60 * 1000; // 1 hour
+
+async function getApplePublicKey(kid) {
+  if (!_appleJWKS || Date.now() - _appleJWKSFetchedAt > APPLE_JWKS_TTL) {
+    const resp = await fetch('https://appleid.apple.com/auth/keys', {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) throw new Error(`Failed to fetch Apple JWKS: ${resp.status}`);
+    _appleJWKS = await resp.json();
+    _appleJWKSFetchedAt = Date.now();
+  }
+  const key = _appleJWKS.keys.find(k => k.kid === kid);
+  if (!key) throw new Error(`Apple public key not found for kid: ${kid}`);
+  return crypto.createPublicKey({ key, format: 'jwk' });
+}
+
+app.post('/auth/apple', authLimiter, async (req, res) => {
   try {
     const { identity_token, full_name } = req.body;
     if (!identity_token) return res.status(400).json({ error: 'Missing identity token' });
 
-    const appleUserId = crypto
-      .createHash('sha256')
-      .update(identity_token)
-      .digest('hex')
-      .slice(0, 44);
+    // Decode header to get the key ID
+    const headerB64 = identity_token.split('.')[0];
+    if (!headerB64) return res.status(400).json({ error: 'Malformed identity token' });
+
+    let header;
+    try {
+      header = JSON.parse(Buffer.from(headerB64, 'base64url').toString());
+    } catch {
+      return res.status(400).json({ error: 'Malformed identity token header' });
+    }
+
+    // Fetch Apple's public key and verify the JWT
+    const publicKey = await getApplePublicKey(header.kid);
+    let payload;
+    try {
+      payload = jwt.verify(identity_token, publicKey, {
+        algorithms: ['RS256'],
+        issuer: 'https://appleid.apple.com',
+      });
+    } catch (verifyErr) {
+      console.warn('apple token verification failed:', verifyErr.message);
+      return res.status(401).json({ error: 'Invalid identity token' });
+    }
+
+    const appleUserId = payload.sub;
+    if (!appleUserId) return res.status(401).json({ error: 'Token missing subject' });
 
     let { rows } = await pool.query('SELECT * FROM users WHERE apple_user_id = $1', [appleUserId]);
 
     if (!rows.length) {
       const name = full_name || 'Apple User';
-      const email = `${appleUserId.slice(0, 8)}@privaterelay.appleid.com`;
-      ({ rows } = await pool.query(
-        `INSERT INTO users (email, display_name, apple_user_id)
-         VALUES ($1, $2, $3) RETURNING *`,
-        [email, name, appleUserId],
-      ));
+      const email = payload.email || `${appleUserId.slice(0, 8)}@privaterelay.appleid.com`;
+      try {
+        ({ rows } = await pool.query(
+          `INSERT INTO users (email, display_name, apple_user_id)
+           VALUES ($1, $2, $3) RETURNING *`,
+          [email, name, appleUserId],
+        ));
+      } catch (insertErr) {
+        if (insertErr.code === '23505' && insertErr.constraint?.includes('email')) {
+          ({ rows } = await pool.query(
+            `UPDATE users SET apple_user_id = $1, display_name = COALESCE(NULLIF($2, 'Apple User'), display_name)
+             WHERE email = $3 AND apple_user_id IS NULL RETURNING *`,
+            [appleUserId, name, email],
+          ));
+          if (!rows.length) {
+            return res.status(409).json({ error: 'Email already linked to a different Apple account' });
+          }
+        } else {
+          throw insertErr;
+        }
+      }
     }
 
     const user = formatUser(rows[0]);
@@ -254,7 +567,7 @@ app.post('/auth/apple', async (req, res) => {
   }
 });
 
-app.post('/auth/refresh', async (req, res) => {
+app.post('/auth/refresh', authLimiter, async (req, res) => {
   try {
     const { refresh_token } = req.body;
     if (!refresh_token) return res.status(400).json({ error: 'Missing refresh token' });
@@ -361,7 +674,15 @@ app.patch('/agents/:id', authenticate, async (req, res) => {
 
     if (name !== undefined) { sets.push(`name = $${i++}`); vals.push(name); }
     if (persona !== undefined) { sets.push(`persona = $${i++}`); vals.push(persona); }
-    if (model !== undefined) { sets.push(`model = $${i++}`); vals.push(model); }
+    if (model !== undefined) {
+      if (!VALID_MODELS.includes(model)) {
+        return res.status(400).json({
+          error: `Unknown model "${model}". Valid models: ${VALID_MODELS.join(', ')}`,
+        });
+      }
+      sets.push(`model = $${i++}`);
+      vals.push(model);
+    }
     if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
 
     sets.push('updated_at = NOW()');
@@ -374,6 +695,23 @@ app.patch('/agents/:id', authenticate, async (req, res) => {
 
     const agent = await agentWithSkills(req.params.id);
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+    // Propagate changes to OpenClaw gateway config and workspace files
+    if (name !== undefined || persona !== undefined || model !== undefined) {
+      try {
+        updateAgentConfig(req.userId, req.params.id, {
+          name: agent.name,
+          persona: agent.persona,
+          model: agent.model,
+        });
+        if (persona !== undefined || model !== undefined) {
+          clearAgentSessions(req.userId, req.params.id);
+        }
+      } catch (configErr) {
+        console.warn('failed to propagate agent config update:', configErr.message);
+      }
+    }
+
     res.json(agent);
   } catch (err) {
     console.error('update agent:', err);
@@ -463,11 +801,21 @@ app.post('/agents/:agentId/skills', authenticate, verifyAgentOwnership, async (r
 
     // Write SKILL.md into the agent's workspace
     installSkill(req.userId, req.params.agentId, skill_id);
+    clearAgentSessions(req.userId, req.params.agentId);
+
+    // Detect setup requirements for the curated skill (env vars, bin tools)
+    const OC_HOME = process.env.OPENCLAW_HOME || '/openclaw-home';
+    const ocId = openclawAgentId(req.userId, req.params.agentId);
+    const skillDir = path.join(OC_HOME, 'workspaces', ocId, 'skills', skill_id);
+    const meta = parseSkillMd(path.join(skillDir, 'SKILL.md'));
+    const setupReqs = detectSetupRequirements(skillDir, meta);
+    const envKeys = setupReqs.filter(r => r.type === 'env').map(r => r.key).join(',');
+    const initialConfig = envKeys ? { _env_keys: envKeys } : {};
 
     await pool.query(
-      `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version, enabled, source)
-       VALUES ($1, $2, $3, $4, $5, true, 'curated') ON CONFLICT DO NOTHING`,
-      [req.params.agentId, skill_id, skill.name, skill.icon, skill.version],
+      `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version, enabled, source, config)
+       VALUES ($1, $2, $3, $4, $5, true, 'curated', $6) ON CONFLICT DO NOTHING`,
+      [req.params.agentId, skill_id, skill.name, skill.icon, skill.version, JSON.stringify(initialConfig)],
     );
     const agent = await agentWithSkills(req.params.agentId);
     res.json(agent);
@@ -508,11 +856,29 @@ app.post('/agents/:agentId/skills/clawhub', authenticate, verifyAgentOwnership, 
 
     // Download + provision the ClawHub skill via CLI
     const result = installClawHubSkill(req.userId, req.params.agentId, slug, catalogEntry);
+    clearAgentSessions(req.userId, req.params.agentId);
+
+    const OC_HOME_CHECK = process.env.OPENCLAW_HOME || '/openclaw-home';
+    const ocIdCheck = openclawAgentId(req.userId, req.params.agentId);
+    const skillMdPath = path.join(OC_HOME_CHECK, 'workspaces', ocIdCheck, 'skills', result.skillId, 'SKILL.md');
+    console.log(`[install] slug=${slug} skillId=${result.skillId} skillMdExists=${fs.existsSync(skillMdPath)} fallback=${result.fallback_used || 'none'}`);
+
+    // Persist env-key names alongside the skill row so the iOS "Configure"
+    // sheet can offer the correct input fields after installation.
+    const envKeys = (result.setup_requirements || [])
+      .filter(r => r.type === 'env')
+      .map(r => r.key)
+      .join(',');
+    const initialConfig = envKeys ? { _env_keys: envKeys } : {};
 
     await pool.query(
-      `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version, enabled, source)
-       VALUES ($1, $2, $3, $4, $5, true, $6) ON CONFLICT DO NOTHING`,
-      [req.params.agentId, result.skillId, result.name, result.icon, result.version, result.source],
+      `INSERT INTO agent_skills (agent_id, skill_id, name, icon, version, enabled, source, config)
+       VALUES ($1, $2, $3, $4, $5, true, $6, $7)
+       ON CONFLICT (agent_id, skill_id) DO UPDATE SET
+         name = EXCLUDED.name, icon = EXCLUDED.icon, version = EXCLUDED.version,
+         source = EXCLUDED.source, config = agent_skills.config || EXCLUDED.config,
+         enabled = true`,
+      [req.params.agentId, result.skillId, result.name, result.icon, result.version, result.source, JSON.stringify(initialConfig)],
     );
 
     // Auto-install CLI dependencies if the skill needs them
@@ -589,12 +955,15 @@ app.patch('/agents/:agentId/skills/:skillId', authenticate, verifyAgentOwnership
     );
     if (!existing) return res.status(404).json({ error: 'Skill not installed on this agent' });
 
+    let skillsChanged = false;
+
     if (enabled !== undefined) {
       await pool.query(
         'UPDATE agent_skills SET enabled = $1 WHERE agent_id = $2 AND skill_id = $3',
         [enabled, req.params.agentId, req.params.skillId],
       );
       setSkillEnabled(req.userId, req.params.agentId, req.params.skillId, enabled);
+      skillsChanged = true;
     }
 
     if (config !== undefined) {
@@ -604,6 +973,8 @@ app.patch('/agents/:agentId/skills/:skillId', authenticate, verifyAgentOwnership
       );
       setSkillConfig(req.userId, req.params.agentId, req.params.skillId, config);
     }
+
+    if (skillsChanged) clearAgentSessions(req.userId, req.params.agentId);
 
     const agent = await agentWithSkills(req.params.agentId);
     res.json(agent);
@@ -627,8 +998,23 @@ app.post('/agents/:agentId/skills/:skillId/credentials', authenticate, verifyAge
     );
     if (!existing) return res.status(404).json({ error: 'Skill not installed on this agent' });
 
+    // Trim whitespace/newlines from credential values (iOS paste often includes trailing whitespace)
+    const trimmed = Object.fromEntries(
+      Object.entries(credentials).map(([k, v]) => [k, typeof v === 'string' ? v.trim() : v]),
+    );
+
+    const credKeys = Object.keys(trimmed);
+    const hadWhitespace = credKeys.some(k => credentials[k] !== trimmed[k]);
+    console.log(`[creds] agent=${req.params.agentId} skill=${req.params.skillId} keys=[${credKeys}] trimmedWhitespace=${hadWhitespace}`);
+
     // Inject credentials into the agent's OpenClaw environment
-    setSkillCredentials(req.userId, req.params.agentId, req.params.skillId, credentials);
+    setSkillCredentials(req.userId, req.params.agentId, req.params.skillId, trimmed);
+
+    // Patch AGENTS.md for pre-fix agents so the agent knows to `source .env`
+    const ocId = openclawAgentId(req.userId, req.params.agentId);
+    ensureAgentsMdPatched(ocId);
+
+    clearAgentSessions(req.userId, req.params.agentId);
 
     // Mark skill as configured in DB
     await pool.query(
@@ -699,10 +1085,47 @@ app.post('/agents/:agentId/skills/:skillId/setup', authenticate, verifyAgentOwne
   }
 });
 
+// Get setup requirements for an installed skill (works for any source)
+app.get('/agents/:agentId/skills/:skillId/requirements', authenticate, verifyAgentOwnership, async (req, res) => {
+  try {
+    const { rows: [existing] } = await pool.query(
+      'SELECT id, skill_id, source, config FROM agent_skills WHERE agent_id = $1 AND skill_id = $2',
+      [req.params.agentId, req.params.skillId],
+    );
+    if (!existing) return res.status(404).json({ error: 'Skill not installed on this agent' });
+
+    const OC_HOME = process.env.OPENCLAW_HOME || '/openclaw-home';
+    const ocId = openclawAgentId(req.userId, req.params.agentId);
+    const skillDir = path.join(OC_HOME, 'workspaces', ocId, 'skills', req.params.skillId);
+
+    let requirements = [];
+    let installCommands = [];
+    if (fs.existsSync(skillDir)) {
+      const meta = parseSkillMd(path.join(skillDir, 'SKILL.md'));
+      requirements = detectSetupRequirements(skillDir, meta);
+      installCommands = extractInstallCommands(skillDir);
+    }
+
+    const isConfigured = existing.config?._configured === true;
+
+    res.json({
+      skill_id: existing.skill_id,
+      source: existing.source,
+      requirements,
+      install_commands: installCommands,
+      is_configured: isConfigured,
+    });
+  } catch (err) {
+    console.error('skill requirements:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 // Uninstall a skill
 app.delete('/agents/:agentId/skills/:skillId', authenticate, verifyAgentOwnership, async (req, res) => {
   try {
     uninstallSkill(req.userId, req.params.agentId, req.params.skillId);
+    clearAgentSessions(req.userId, req.params.agentId);
 
     await pool.query(
       'DELETE FROM agent_skills WHERE agent_id = $1 AND skill_id = $2',
@@ -719,7 +1142,7 @@ app.delete('/agents/:agentId/skills/:skillId', authenticate, verifyAgentOwnershi
 // Tasks (real OpenClaw execution via BullMQ)
 // ──────────────────────────────────────────────
 
-app.get('/agents/:agentId/tasks', authenticate, async (req, res) => {
+app.get('/agents/:agentId/tasks', authenticate, verifyAgentOwnership, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT id, agent_id, input, output, status, tokens_used, file_ids, created_at, completed_at
@@ -816,7 +1239,7 @@ app.post('/agents/:agentId/tasks', authenticate, async (req, res) => {
 app.delete('/agents/:agentId/tasks', authenticate, async (req, res) => {
   try {
     const { rows: [agent] } = await pool.query(
-      'SELECT id FROM agents WHERE id = $1 AND user_id = $2',
+      'SELECT id, openclaw_agent_id FROM agents WHERE id = $1 AND user_id = $2',
       [req.params.agentId, req.userId],
     );
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
@@ -825,6 +1248,9 @@ app.delete('/agents/:agentId/tasks', authenticate, async (req, res) => {
       "DELETE FROM tasks WHERE agent_id = $1 AND user_id = $2 AND status NOT IN ('queued', 'running')",
       [req.params.agentId, req.userId],
     );
+
+    clearAgentSessions(req.userId, req.params.agentId);
+
     res.json({ deleted: rowCount });
   } catch (err) {
     console.error('clear tasks:', err);
@@ -832,7 +1258,7 @@ app.delete('/agents/:agentId/tasks', authenticate, async (req, res) => {
   }
 });
 
-app.get('/agents/:agentId/tasks/:taskId', authenticate, async (req, res) => {
+app.get('/agents/:agentId/tasks/:taskId', authenticate, verifyAgentOwnership, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT id, agent_id, input, output, status, tokens_used, created_at, completed_at
@@ -1680,19 +2106,117 @@ const CLAWHUB_SKILLS = [
   },
 ];
 
+// ── Live ClawHub proxy helpers ────────────────────────
+const CLAWHUB_API = 'https://topclawhubskills.com/api';
+const CLAWHUB_CACHE_TTL = 5 * 60 * 1000; // 5 min
+const _clawhubCache = new Map();
+
+const CLAWHUB_SLUG_META = Object.fromEntries(
+  CLAWHUB_SKILLS.map(s => [s.slug.split('/').pop(), s]),
+);
+
+const CATEGORY_ICONS = {
+  Productivity: 'checkmark.circle.fill', Research: 'magnifyingglass.circle.fill',
+  Writing: 'pencil.circle.fill', Data: 'chart.bar.fill',
+  Communication: 'message.circle.fill', Automation: 'gearshape.2.fill',
+  Development: 'chevron.left.forwardslash.chevron.right', 'AI/ML': 'brain',
+  Utility: 'wrench.fill', Web: 'globe', Science: 'flask.fill',
+  Media: 'play.rectangle.fill', Social: 'person.2.fill',
+  Finance: 'chart.line.uptrend.xyaxis', Location: 'location.fill',
+  Business: 'briefcase.fill',
+};
+
+const CATEGORY_KEYWORDS = [
+  [/\b(github|git\b|code|debug|refactor|compiler|IDE|linter|docker|deploy|CI\/CD|CLI|terminal|sdk|api)\b/i, 'Development'],
+  [/\b(slack|discord|telegram|twitter|social|post(?:ing|er)|mastodon)\b/i, 'Social'],
+  [/\b(video|audio|music|photo|camera|youtube|spotify|media|transcri|podcast|stream)\b/i, 'Media'],
+  [/\b(search|scrape|browse|web|http|html|url|crawl)\b/i, 'Web'],
+  [/\b(stock|crypto|financ|trading|invest|portfolio|bitcoin)\b/i, 'Finance'],
+  [/\b(note|todo|task|calendar|remind|productiv|obsidian|notion|trello)\b/i, 'Productivity'],
+  [/\b(pdf|csv|data|sql|database|analytics)\b/i, 'Data'],
+  [/\b(write|blog|markdown|document|essay)\b/i, 'Writing'],
+  [/\b(automat|workflow|schedule|cron|pipeline)\b/i, 'Automation'],
+  [/\b(weather|location|map|gps|place|geograph)\b/i, 'Location'],
+  [/\b(research|paper|arxiv|academic|scholar)\b/i, 'Research'],
+  [/\b(business|crm|lead|sales)\b/i, 'Business'],
+  [/\b(ai\b|llm|prompt|neural|machine.learn|model.select|model.rout)\b/i, 'AI/ML'],
+];
+
+function inferCategory(text) {
+  for (const [re, cat] of CATEGORY_KEYWORDS) {
+    if (re.test(text)) return cat;
+  }
+  return 'Utility';
+}
+
+async function fetchClawHub(endpoint) {
+  const cached = _clawhubCache.get(endpoint);
+  if (cached && Date.now() - cached.ts < CLAWHUB_CACHE_TTL) return cached.data;
+
+  const resp = await fetch(`${CLAWHUB_API}${endpoint}`, {
+    headers: { 'User-Agent': 'OpenClaw-Backend/1.0', Accept: 'application/json' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!resp.ok) throw new Error(`ClawHub API ${resp.status}`);
+  const json = await resp.json();
+  const data = json.data || [];
+  _clawhubCache.set(endpoint, { data, ts: Date.now() });
+  return data;
+}
+
+function mapLiveSkill(s) {
+  const shortSlug = s.slug;
+  const known = CLAWHUB_SLUG_META[shortSlug];
+  const text = `${s.display_name} ${s.summary || ''}`;
+  const category = known?.category || inferCategory(text);
+  return {
+    slug: known?.slug || `${s.owner_handle}/${s.slug}`,
+    name: known?.name || s.display_name || s.slug,
+    description: known?.description || s.summary || '',
+    icon: known?.icon || CATEGORY_ICONS[category] || 'puzzlepiece.fill',
+    author: known?.author || s.owner_handle || 'Community',
+    category,
+    downloads: s.downloads ?? 0,
+    stars: s.stars ?? 0,
+    version: known?.version || '1.0.0',
+    clawhub_url: s.clawhub_url || null,
+    is_certified: s.is_certified || false,
+  };
+}
+
 app.get('/skills/clawhub/browse', authenticate, async (req, res) => {
   try {
     const { category, q, agent_id } = req.query;
-    let filtered = CLAWHUB_SKILLS;
 
-    if (category) filtered = filtered.filter(s => s.category === category);
-    if (q) {
+    if (agent_id) {
+      const { rows: ownerCheck } = await pool.query(
+        'SELECT id FROM agents WHERE id = $1 AND user_id = $2', [agent_id, req.userId],
+      );
+      if (!ownerCheck.length) return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    let skills;
+    let source = 'live';
+
+    try {
+      const endpoint = q
+        ? `/search?q=${encodeURIComponent(q)}&limit=100`
+        : '/top-downloads?limit=100';
+      const raw = await fetchClawHub(endpoint);
+      skills = raw.filter(s => !s.is_deleted).map(mapLiveSkill);
+    } catch (err) {
+      console.warn('ClawHub live fetch failed, using fallback:', err.message);
+      skills = CLAWHUB_SKILLS.map(s => ({ ...s }));
+      source = 'fallback';
+    }
+
+    if (category) skills = skills.filter(s => s.category === category);
+    if (q && source === 'fallback') {
       const lower = q.toLowerCase();
-      filtered = filtered.filter(
+      skills = skills.filter(
         s => s.name.toLowerCase().includes(lower)
           || s.description.toLowerCase().includes(lower)
-          || s.slug.toLowerCase().includes(lower)
-          || s.aliases?.some(a => a.toLowerCase().includes(lower)),
+          || s.slug.toLowerCase().includes(lower),
       );
     }
 
@@ -1705,7 +2229,7 @@ app.get('/skills/clawhub/browse', authenticate, async (req, res) => {
       installedSlugs = new Set(rows.map(r => r.skill_id));
     }
 
-    const skills = filtered.map(s => ({
+    const result = skills.map(s => ({
       id: s.slug,
       slug: s.slug,
       ...s,
@@ -1719,7 +2243,7 @@ app.get('/skills/clawhub/browse', authenticate, async (req, res) => {
         : undefined,
     }));
 
-    res.json({ skills, total_count: skills.length });
+    res.json({ skills: result, total_count: result.length, source });
   } catch (err) {
     console.error('clawhub browse:', err);
     res.status(500).json({ error: 'Internal error' });
@@ -1732,6 +2256,13 @@ app.get('/skills/catalog', authenticate, async (req, res) => {
     let filtered = CURATED_SKILLS;
     const { category, q, agent_id } = req.query;
 
+    if (agent_id) {
+      const { rows: ownerCheck } = await pool.query(
+        'SELECT id FROM agents WHERE id = $1 AND user_id = $2', [agent_id, req.userId],
+      );
+      if (!ownerCheck.length) return res.status(404).json({ error: 'Agent not found' });
+    }
+
     if (category) filtered = filtered.filter((s) => s.category === category);
     if (q) {
       const lower = q.toLowerCase();
@@ -1740,7 +2271,6 @@ app.get('/skills/catalog', authenticate, async (req, res) => {
       );
     }
 
-    // If an agent_id is provided, annotate each skill with installed status
     let installedIds = new Set();
     if (agent_id) {
       const { rows } = await pool.query(
@@ -1830,17 +2360,64 @@ app.get('/subscription', authenticate, async (req, res) => {
 app.post('/subscription/verify', authenticate, async (req, res) => {
   try {
     const { receipt_data, product_id } = req.body;
-    // TODO: Verify receipt with Apple's App Store Server API.
+    if (!receipt_data || !product_id) {
+      return res.status(400).json({ error: 'Missing receipt_data or product_id' });
+    }
+
+    // Validate receipt with Apple's App Store Server API (v2)
+    // https://developer.apple.com/documentation/appstoreserverapi
+    const APPLE_SHARED_SECRET = process.env.APPLE_SHARED_SECRET;
+    if (!APPLE_SHARED_SECRET) {
+      console.error('APPLE_SHARED_SECRET not configured — cannot verify receipts');
+      return res.status(503).json({ error: 'Receipt verification not configured' });
+    }
+
+    const verifyUrl = process.env.NODE_ENV === 'production'
+      ? 'https://buy.itunes.apple.com/verifyReceipt'
+      : 'https://sandbox.itunes.apple.com/verifyReceipt';
+
+    const appleRes = await fetch(verifyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        'receipt-data': receipt_data,
+        password: APPLE_SHARED_SECRET,
+        'exclude-old-transactions': true,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    const appleBody = await appleRes.json();
+
+    if (appleBody.status !== 0) {
+      console.warn('apple receipt verification failed, status:', appleBody.status);
+      if (appleBody.status === 21007) {
+        return res.status(400).json({ error: 'Sandbox receipt sent to production — retry in sandbox mode' });
+      }
+      return res.status(400).json({ error: 'Invalid receipt' });
+    }
+
+    const latestInfo = appleBody.latest_receipt_info?.[0];
+    if (!latestInfo) {
+      return res.status(400).json({ error: 'No subscription found in receipt' });
+    }
+
+    const expiresMs = parseInt(latestInfo.expires_date_ms, 10);
+    const expiresAt = new Date(expiresMs);
+    const isActive = expiresAt > new Date();
+
     await pool.query(
       `INSERT INTO subscriptions (user_id, product_id, tier, is_active, expires_at)
-       VALUES ($1, $2, 'pro', true, NOW() + INTERVAL '30 days')
+       VALUES ($1, $2, 'pro', $3, $4)
        ON CONFLICT (user_id)
-       DO UPDATE SET product_id = $2, tier = 'pro', is_active = true,
-                     expires_at = NOW() + INTERVAL '30 days', updated_at = NOW()`,
-      [req.userId, product_id],
+       DO UPDATE SET product_id = $2, tier = 'pro', is_active = $3,
+                     expires_at = $4, updated_at = NOW()`,
+      [req.userId, product_id, isActive, expiresAt],
     );
-    await pool.query("UPDATE users SET tier = 'pro' WHERE id = $1", [req.userId]);
-    res.json({ status: 'verified', tier: 'pro' });
+    if (isActive) {
+      await pool.query("UPDATE users SET tier = 'pro' WHERE id = $1", [req.userId]);
+    }
+    res.json({ status: 'verified', tier: isActive ? 'pro' : 'free', expires_at: expiresAt });
   } catch (err) {
     console.error('verify subscription:', err);
     res.status(500).json({ error: 'Internal error' });
@@ -1981,6 +2558,420 @@ app.delete('/files/:fileId', authenticate, async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
+// OAuth config (set credentials from app)
+// ──────────────────────────────────────────────
+
+app.get('/admin/oauth-config', authenticate, authenticateAdmin, async (req, res) => {
+  try {
+    const providers = {};
+    for (const name of Object.keys(OAUTH_PROVIDER_DEFAULTS)) {
+      const p = getOAuthProvider(name);
+      providers[name] = {
+        configured: !!(p.client_id && p.client_secret),
+        has_client_id: !!p.client_id,
+        has_client_secret: !!p.client_secret,
+      };
+    }
+    res.json({ providers, redirect_base: OAUTH_REDIRECT_BASE });
+  } catch (err) {
+    console.error('get oauth config:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.post('/admin/oauth-config', authenticate, authenticateAdmin, async (req, res) => {
+  try {
+    const { provider, client_id, client_secret } = req.body;
+    if (!provider || !OAUTH_PROVIDER_DEFAULTS[provider]) {
+      return res.status(400).json({ error: 'Invalid provider' });
+    }
+    if (!client_id || !client_secret) {
+      return res.status(400).json({ error: 'Both client_id and client_secret are required' });
+    }
+
+    await pool.query(
+      `INSERT INTO app_config (key, value, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (key)
+       DO UPDATE SET value = $2, updated_at = NOW()`,
+      [`oauth_creds_${provider}`, JSON.stringify({ client_id, client_secret })],
+    );
+
+    await loadOAuthConfigFromDB();
+
+    const p = getOAuthProvider(provider);
+    res.json({
+      ok: true,
+      provider,
+      configured: !!(p.client_id && p.client_secret),
+    });
+  } catch (err) {
+    console.error('set oauth config:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// ──────────────────────────────────────────────
+// OAuth flows (Slack, Google, Notion)
+// ──────────────────────────────────────────────
+
+// Step 1: iOS app opens this URL in ASWebAuthenticationSession.
+// Generates a state param, stores it, and redirects to the provider's auth page.
+app.get('/oauth/:provider/authorize', authenticate, async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const { agent_id, skill_id, connect_all } = req.query;
+
+    const cfg = OAUTH_PROVIDERS[provider];
+    if (!cfg) return res.status(400).json({ error: `Unknown OAuth provider: ${provider}` });
+    if (!cfg.client_id) return res.status(422).json({ error: 'oauth_not_configured', provider });
+    if (!agent_id || !skill_id) return res.status(400).json({ error: 'Missing agent_id or skill_id' });
+
+    const { rows: [agentRow] } = await pool.query(
+      'SELECT id FROM agents WHERE id = $1 AND user_id = $2',
+      [agent_id, req.userId],
+    );
+    if (!agentRow) return res.status(404).json({ error: 'Agent not found' });
+
+    const state = crypto.randomUUID();
+    const codeVerifier = crypto.randomBytes(32).toString('base64url');
+    const connectAll = connect_all === 'true';
+
+    await pool.query(
+      `INSERT INTO oauth_states (user_id, agent_id, skill_id, provider, state, code_verifier, connect_all)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [req.userId, agent_id, skill_id, provider, state, codeVerifier, connectAll],
+    );
+
+    const redirectUri = `${OAUTH_REDIRECT_BASE}/oauth/${provider}/callback`;
+    const params = new URLSearchParams({
+      client_id: cfg.client_id,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      state,
+    });
+
+    if (cfg.scopes) {
+      params.set('scope', cfg.scopes);
+    }
+
+    if (cfg.extra_params) {
+      for (const [k, v] of Object.entries(cfg.extra_params)) {
+        params.set(k, v);
+      }
+    }
+
+    if (provider === 'notion') {
+      params.set('owner', 'user');
+    }
+
+    const authUrl = `${cfg.authorize_url}?${params.toString()}`;
+    res.json({ auth_url: authUrl, state });
+  } catch (err) {
+    console.error('oauth authorize:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Step 2: Provider redirects here after user grants permission.
+// Exchanges the code for tokens, stores them, and redirects to the app.
+app.get('/oauth/:provider/callback', async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const { code, state, error: oauthError } = req.query;
+
+    if (oauthError) {
+      return res.redirect(`openclaw://oauth/error?provider=${provider}&error=${encodeURIComponent(oauthError)}`);
+    }
+
+    if (!code || !state) {
+      return res.redirect(`openclaw://oauth/error?provider=${provider}&error=missing_code_or_state`);
+    }
+
+    const cfg = OAUTH_PROVIDERS[provider];
+    if (!cfg) {
+      return res.redirect(`openclaw://oauth/error?provider=${provider}&error=unknown_provider`);
+    }
+
+    // Validate state and retrieve context
+    const { rows: [oauthState] } = await pool.query(
+      `DELETE FROM oauth_states WHERE state = $1 AND provider = $2 AND expires_at > NOW() RETURNING *`,
+      [state, provider],
+    );
+    if (!oauthState) {
+      return res.redirect(`openclaw://oauth/error?provider=${provider}&error=invalid_or_expired_state`);
+    }
+
+    const { user_id: userId, agent_id: agentId, skill_id: skillId, connect_all: connectAll } = oauthState;
+    const redirectUri = `${OAUTH_REDIRECT_BASE}/oauth/${provider}/callback`;
+
+    // Exchange code for tokens
+    const tokenParams = new URLSearchParams({
+      code,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    });
+
+    if (cfg.auth_method !== 'basic') {
+      tokenParams.set('client_id', cfg.client_id);
+      tokenParams.set('client_secret', cfg.client_secret);
+    }
+
+    const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+    if (cfg.auth_method === 'basic') {
+      const basicAuth = Buffer.from(`${cfg.client_id}:${cfg.client_secret}`).toString('base64');
+      headers['Authorization'] = `Basic ${basicAuth}`;
+    }
+
+    // Notion expects JSON body
+    let tokenResponse;
+    if (provider === 'notion') {
+      tokenResponse = await fetch(cfg.token_url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Basic ${Buffer.from(`${cfg.client_id}:${cfg.client_secret}`).toString('base64')}`,
+          'Notion-Version': '2022-06-28',
+        },
+        body: JSON.stringify({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: redirectUri,
+        }),
+      });
+    } else {
+      tokenResponse = await fetch(cfg.token_url, {
+        method: 'POST',
+        headers,
+        body: tokenParams.toString(),
+      });
+    }
+
+    const tokenBody = await tokenResponse.json();
+
+    if (!tokenResponse.ok) {
+      console.error(`oauth token exchange failed for ${provider}:`, tokenBody);
+      return res.redirect(`openclaw://oauth/error?provider=${provider}&error=token_exchange_failed`);
+    }
+
+    const extracted = cfg.extract_token(tokenBody);
+    if (!extracted.access_token) {
+      console.error(`no access_token in ${provider} response:`, tokenBody);
+      return res.redirect(`openclaw://oauth/error?provider=${provider}&error=no_access_token`);
+    }
+
+    const expiresAt = extracted.expires_in
+      ? new Date(Date.now() + extracted.expires_in * 1000)
+      : null;
+
+    // Store in oauth_tokens table
+    await pool.query(
+      `INSERT INTO oauth_tokens (user_id, agent_id, skill_id, provider, access_token, refresh_token, scope, expires_at, extra)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (agent_id, skill_id, provider)
+       DO UPDATE SET access_token = $5, refresh_token = COALESCE($6, oauth_tokens.refresh_token),
+                     scope = $7, expires_at = $8, extra = $9, updated_at = NOW()`,
+      [userId, agentId, skillId, provider, extracted.access_token,
+       extracted.refresh_token, extracted.scope || null, expiresAt,
+       JSON.stringify(extracted.extra || {})],
+    );
+
+    // Inject token into skill credentials so the agent can use it immediately
+    const credentials = { [cfg.token_field]: extracted.access_token };
+    setSkillCredentials(userId, agentId, skillId, credentials);
+
+    // Mark skill as configured
+    await pool.query(
+      `UPDATE agent_skills SET config = config || $1 WHERE agent_id = $2 AND skill_id = $3`,
+      [JSON.stringify({ _configured: true, _oauth_provider: provider }), agentId, skillId],
+    );
+
+    // Propagate token to all agents with matching skills when connect_all is set
+    if (connectAll && cfg.skill_ids) {
+      const { rows: otherSkills } = await pool.query(
+        `SELECT a.id AS agent_id, s.skill_id
+         FROM agents a
+         JOIN agent_skills s ON s.agent_id = a.id
+         WHERE a.user_id = $1
+           AND s.skill_id = ANY($2)
+           AND NOT (a.id = $3 AND s.skill_id = $4)`,
+        [userId, cfg.skill_ids, agentId, skillId],
+      );
+
+      for (const row of otherSkills) {
+        await pool.query(
+          `INSERT INTO oauth_tokens (user_id, agent_id, skill_id, provider, access_token, refresh_token, scope, expires_at, extra)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (agent_id, skill_id, provider)
+           DO UPDATE SET access_token = $5, refresh_token = COALESCE($6, oauth_tokens.refresh_token),
+                         scope = $7, expires_at = $8, extra = $9, updated_at = NOW()`,
+          [userId, row.agent_id, row.skill_id, provider, extracted.access_token,
+           extracted.refresh_token, extracted.scope || null, expiresAt,
+           JSON.stringify(extracted.extra || {})],
+        );
+        setSkillCredentials(userId, row.agent_id, row.skill_id, credentials);
+        await pool.query(
+          `UPDATE agent_skills SET config = config || $1 WHERE agent_id = $2 AND skill_id = $3`,
+          [JSON.stringify({ _configured: true, _oauth_provider: provider }), row.agent_id, row.skill_id],
+        );
+      }
+
+      console.log(`[oauth] ${provider} connected for ALL agents (${otherSkills.length + 1} skills) user=${userId}`);
+    } else {
+      console.log(`[oauth] ${provider} connected for agent=${agentId} skill=${skillId}`);
+    }
+
+    res.redirect(`openclaw://oauth/success?provider=${provider}&skill_id=${encodeURIComponent(skillId)}&connect_all=${connectAll ? 'true' : 'false'}`);
+  } catch (err) {
+    console.error('oauth callback:', err);
+    const { provider } = req.params;
+    res.redirect(`openclaw://oauth/error?provider=${provider}&error=internal_error`);
+  }
+});
+
+// Refresh an expired OAuth token
+app.post('/oauth/:provider/refresh', authenticate, async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const { agent_id, skill_id } = req.body;
+
+    const cfg = OAUTH_PROVIDERS[provider];
+    if (!cfg) return res.status(400).json({ error: `Unknown OAuth provider: ${provider}` });
+
+    const { rows: [tokenRow] } = await pool.query(
+      `SELECT * FROM oauth_tokens WHERE agent_id = $1 AND skill_id = $2 AND provider = $3 AND user_id = $4`,
+      [agent_id, skill_id, provider, req.userId],
+    );
+    if (!tokenRow) return res.status(404).json({ error: 'No OAuth tokens found for this skill' });
+    if (!tokenRow.refresh_token) return res.status(400).json({ error: 'No refresh token available — user must re-authorize' });
+
+    const tokenParams = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: tokenRow.refresh_token,
+      client_id: cfg.client_id,
+      client_secret: cfg.client_secret,
+    });
+
+    const tokenResponse = await fetch(cfg.token_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: tokenParams.toString(),
+    });
+
+    const tokenBody = await tokenResponse.json();
+    if (!tokenResponse.ok) {
+      console.error(`oauth refresh failed for ${provider}:`, tokenBody);
+      return res.status(502).json({ error: 'Token refresh failed — user may need to re-authorize' });
+    }
+
+    const newAccessToken = tokenBody.access_token;
+    const newRefreshToken = tokenBody.refresh_token || tokenRow.refresh_token;
+    const expiresAt = tokenBody.expires_in
+      ? new Date(Date.now() + tokenBody.expires_in * 1000)
+      : null;
+
+    await pool.query(
+      `UPDATE oauth_tokens SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = NOW()
+       WHERE agent_id = $4 AND skill_id = $5 AND provider = $6`,
+      [newAccessToken, newRefreshToken, expiresAt, agent_id, skill_id, provider],
+    );
+
+    // Re-inject updated token
+    setSkillCredentials(req.userId, agent_id, skill_id, { [cfg.token_field]: newAccessToken });
+
+    res.json({ status: 'refreshed', expires_at: expiresAt });
+  } catch (err) {
+    console.error('oauth refresh:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Check OAuth connection status for a skill
+app.get('/oauth/status', authenticate, async (req, res) => {
+  try {
+    const { agent_id, skill_id } = req.query;
+    if (!agent_id || !skill_id) return res.status(400).json({ error: 'Missing agent_id or skill_id' });
+
+    const { rows: [tokenRow] } = await pool.query(
+      `SELECT provider, scope, expires_at, extra, created_at, updated_at
+       FROM oauth_tokens WHERE agent_id = $1 AND skill_id = $2 AND user_id = $3`,
+      [agent_id, skill_id, req.userId],
+    );
+
+    if (!tokenRow) {
+      const provider = oauthProviderForSkill(skill_id);
+      return res.json({ connected: false, provider, has_oauth: !!provider });
+    }
+
+    const isExpired = tokenRow.expires_at && new Date(tokenRow.expires_at) < new Date();
+    res.json({
+      connected: !isExpired,
+      provider: tokenRow.provider,
+      has_oauth: true,
+      scope: tokenRow.scope,
+      expires_at: tokenRow.expires_at,
+      connected_at: tokenRow.created_at,
+      needs_refresh: isExpired,
+      extra: tokenRow.extra,
+    });
+  } catch (err) {
+    console.error('oauth status:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Global OAuth status: is the provider connected for any agent?
+app.get('/oauth/:provider/status-global', authenticate, async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const cfg = OAUTH_PROVIDERS[provider];
+    if (!cfg) return res.status(400).json({ error: `Unknown OAuth provider: ${provider}` });
+
+    const { rows: eligibleSkills } = await pool.query(
+      `SELECT a.id AS agent_id, a.name AS agent_name, s.skill_id
+       FROM agents a
+       JOIN agent_skills s ON s.agent_id = a.id
+       WHERE a.user_id = $1 AND s.skill_id = ANY($2)`,
+      [req.userId, cfg.skill_ids || []],
+    );
+
+    if (eligibleSkills.length === 0) {
+      return res.json({ connected: false, has_eligible_skills: false, connected_count: 0, total_count: 0, agents: [] });
+    }
+
+    const { rows: connectedTokens } = await pool.query(
+      `SELECT agent_id, skill_id, expires_at FROM oauth_tokens
+       WHERE user_id = $1 AND provider = $2`,
+      [req.userId, provider],
+    );
+
+    const connectedSet = new Set(connectedTokens.map(t => `${t.agent_id}:${t.skill_id}`));
+    const anyExpired = connectedTokens.some(t => t.expires_at && new Date(t.expires_at) < new Date());
+
+    const agents = eligibleSkills.map(s => ({
+      agent_id: s.agent_id,
+      agent_name: s.agent_name,
+      skill_id: s.skill_id,
+      connected: connectedSet.has(`${s.agent_id}:${s.skill_id}`),
+    }));
+
+    const connectedCount = agents.filter(a => a.connected).length;
+
+    res.json({
+      connected: connectedCount > 0,
+      has_eligible_skills: true,
+      connected_count: connectedCount,
+      total_count: eligibleSkills.length,
+      needs_refresh: anyExpired,
+      agents,
+    });
+  } catch (err) {
+    console.error('oauth status-global:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// ──────────────────────────────────────────────
 // Health
 // ──────────────────────────────────────────────
 
@@ -2008,7 +2999,31 @@ const PORT = process.env.PORT || 3000;
 const server = http.createServer(app);
 createWSRelay(server);
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`API Gateway listening on :${PORT}`);
-  console.log(`WebSocket relay available at ws://0.0.0.0:${PORT}/ws/agents/:agentId`);
+// Periodic cleanup of expired rows (runs every hour)
+async function cleanupExpired() {
+  try {
+    const { rowCount: states } = await pool.query(
+      'DELETE FROM oauth_states WHERE expires_at < NOW()',
+    );
+    const { rowCount: tokens } = await pool.query(
+      'DELETE FROM refresh_tokens WHERE expires_at < NOW()',
+    );
+    if (states || tokens) {
+      console.log(`[cleanup] removed ${states} expired oauth_states, ${tokens} expired refresh_tokens`);
+    }
+  } catch (err) {
+    console.warn('[cleanup] error:', err.message);
+  }
+}
+
+ensureSchema().then(async () => {
+  await loadOAuthConfigFromDB();
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`API Gateway listening on :${PORT}`);
+    console.log(`WebSocket relay available at ws://0.0.0.0:${PORT}/ws/agents/:agentId`);
+  });
+
+  cleanupExpired();
+  const cleanupInterval = setInterval(cleanupExpired, 60 * 60 * 1000);
+  if (cleanupInterval.unref) cleanupInterval.unref();
 });
