@@ -76,13 +76,27 @@ final class TaskService {
             }
         case .completed:
             tasks[index].completedAt = Date()
+            tasks[index].toolSteps.removeAll()
         case .failed:
             if let content {
                 tasks[index].output = content
             }
+            tasks[index].toolSteps.removeAll()
         default:
             break
         }
         tasks[index].status = status
+    }
+
+    func handleToolStart(taskId: String, toolName: String) {
+        guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        tasks[index].toolSteps.append(ToolStep(name: toolName, isDone: false))
+    }
+
+    func handleToolEnd(taskId: String, toolName: String) {
+        guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        if let stepIndex = tasks[index].toolSteps.lastIndex(where: { $0.name == toolName && !$0.isDone }) {
+            tasks[index].toolSteps[stepIndex].isDone = true
+        }
     }
 }

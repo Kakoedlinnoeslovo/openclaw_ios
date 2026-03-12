@@ -50,6 +50,7 @@
 		A10000010000000000000029 /* OAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000029 /* OAuthService.swift */; };
 		A1000001000000000000002A /* DocumentPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002A /* DocumentPicker.swift */; };
 		A1000001000000000000002B /* SpeechRecognitionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002B /* SpeechRecognitionService.swift */; };
+		A1000001000000000000002C /* MarkdownTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002C /* MarkdownTextView.swift */; };
 		B10000010000000000000001 /* OpenClawUITestBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* OpenClawUITestBase.swift */; };
 		B10000010000000000000002 /* OnboardingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* OnboardingFlowTests.swift */; };
 		B10000010000000000000003 /* PaywallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* PaywallTests.swift */; };
@@ -114,6 +115,7 @@
 		A20000010000000000000029 /* OAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthService.swift; sourceTree = "<group>"; };
 		A2000001000000000000002A /* DocumentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPicker.swift; sourceTree = "<group>"; };
 		A2000001000000000000002B /* SpeechRecognitionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognitionService.swift; sourceTree = "<group>"; };
+		A2000001000000000000002C /* MarkdownTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownTextView.swift; sourceTree = "<group>"; };
 		A30000010000000000000001 /* OpenClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000010000000000000001 /* OpenClawUITestBase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawUITestBase.swift; sourceTree = "<group>"; };
 		B20000010000000000000002 /* OnboardingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlowTests.swift; sourceTree = "<group>"; };
@@ -286,6 +288,7 @@
 				A2000001000000000000001A /* AgentCardView.swift */,
 				A2000001000000000000001B /* SkillCardView.swift */,
 				A2000001000000000000001C /* TaskBubbleView.swift */,
+				A2000001000000000000002C /* MarkdownTextView.swift */,
 				A2000001000000000000002A /* DocumentPicker.swift */,
 			);
 			path = Components;
@@ -441,6 +444,7 @@
 				A1000001000000000000001A /* AgentCardView.swift in Sources */,
 				A1000001000000000000001B /* SkillCardView.swift in Sources */,
 				A1000001000000000000001C /* TaskBubbleView.swift in Sources */,
+				A1000001000000000000002C /* MarkdownTextView.swift in Sources */,
 				A1000001000000000000001D /* Keychain.swift in Sources */,
 				A1000001000000000000001E /* Constants.swift in Sources */,
 				A1000001000000000000001F /* Subscription.swift in Sources */,

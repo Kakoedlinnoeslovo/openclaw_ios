@@ -113,6 +113,7 @@ struct PaywallView: View {
             providerChip("text.book.closed", "Aa", angle: 240, radius: 100)
         }
         .frame(height: 260)
+        .clipped()
     }
 
     private func providerChip(_ icon: String, _ name: String, angle: Double, radius: CGFloat) -> some View {
@@ -400,6 +401,7 @@ struct PaywallView: View {
                     .padding(.vertical, 18)
                 }
             }
+            .contentShape(Rectangle())
             .background(
                 LinearGradient(
                     colors: theme.heroGradient,
@@ -438,8 +440,12 @@ struct PaywallView: View {
     // MARK: - Purchase
 
     private func purchase() {
-        guard let product = selectedProduct else { return }
+        guard let product = selectedProduct else {
+            errorMessage = "Unable to load subscription. Check your connection and try again."
+            return
+        }
         isPurchasing = true
+        errorMessage = nil
         Task {
             do {
                 let success = try await subscription.purchase(product)

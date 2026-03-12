@@ -9,11 +9,12 @@ struct ContentView: View {
         Group {
             if auth.isAuthenticated {
                 MainTabView()
+                    .transition(.opacity)
             } else {
                 OnboardingView()
+                    .transition(.opacity)
             }
         }
-        .animation(.easeInOut, value: auth.isAuthenticated)
         .onChange(of: auth.isAuthenticated) { _, isAuth in
             if isAuth && !theme.hasSeenTrialPaywall {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

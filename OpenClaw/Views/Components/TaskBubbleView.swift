@@ -83,8 +83,7 @@ struct TaskBubbleView: View {
                     switch block {
                     case .text(let str):
                         if !str.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(str)
-                                .font(.subheadline)
+                            MarkdownTextView(text: str)
                                 .textSelection(.enabled)
                         }
                     case .image(let url):
@@ -372,19 +371,57 @@ struct TaskBubbleView: View {
 
     private var loadingBubble: some View {
         HStack {
-            HStack(spacing: 8) {
-                TypingIndicator()
-                Text(task.status == .queued ? "Queued" : "Thinking")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                if !task.toolSteps.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(task.toolSteps.enumerated()), id: \.offset) { _, step in
+                            HStack(spacing: 7) {
+                                if step.isDone {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.green)
+                                } else {
+                                    ProgressView()
+                                        .scaleEffect(0.5)
+                                        .frame(width: 11, height: 11)
+                                }
+
+                                Image(systemName: step.iconName)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(step.isDone ? .secondary : theme.accent)
+
+                                Text(step.displayName)
+                                    .font(.system(size: 12, weight: step.isDone ? .regular : .medium))
+                                    .foregroundStyle(step.isDone ? .secondary : .primary)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                }
+
+                HStack(spacing: 8) {
+                    TypingIndicator()
+                    Text(currentActivityLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, task.toolSteps.isEmpty ? 12 : 8)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
             .background(Color(.secondarySystemGroupedBackground))
             .clipShape(ChatBubbleShape(isUser: false))
 
             Spacer(minLength: 60)
         }
+    }
+
+    private var currentActivityLabel: String {
+        if task.status == .queued { return "Queued" }
+        if let active = task.toolSteps.last(where: { !$0.isDone }) {
+            return active.displayName + "…"
+        }
+        return "Thinking"
     }
 
     private var errorBubble: some View {

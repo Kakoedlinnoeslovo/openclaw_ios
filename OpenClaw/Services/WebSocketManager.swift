@@ -80,6 +80,16 @@ final class WebSocketManager {
                     content: event.error,
                     status: .failed
                 )
+            case .toolStart:
+                TaskService.shared.handleToolStart(
+                    taskId: event.taskId,
+                    toolName: event.toolName ?? "unknown"
+                )
+            case .toolEnd:
+                TaskService.shared.handleToolEnd(
+                    taskId: event.taskId,
+                    toolName: event.toolName ?? "unknown"
+                )
             }
         }
     }

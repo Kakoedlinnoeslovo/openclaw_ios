@@ -40,12 +40,11 @@ echo "Building OpenClaw gateway (first build takes a few minutes) …"
 docker compose build openclaw-gateway
 
 echo "Building API gateway …"
-docker compose build api-gateway
+docker compose build --no-cache api-gateway
 
 # ── Start everything ─────────────────────────────────
 echo "Starting services …"
-docker compose up -d
-
+docker compose up -d api-gateway worker
 echo ""
 echo "Waiting for onboarding to complete …"
 docker compose logs -f onboard 2>/dev/null | while read -r line; do
