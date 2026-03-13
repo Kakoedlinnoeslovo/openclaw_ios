@@ -18,6 +18,7 @@ const {
   installClawHubSkill, setSkillCredentials, extractInstallCommands,
   detectSetupRequirements, parseSkillMd,
   openclawAgentId, ensureAgentsMdPatched, ensureWorkspaceReady,
+  getInstalledSkillIds,
   PERSONA_RECOMMENDATIONS, VALID_MODELS,
 } = require('./provisioner');
 const { createWSRelay } = require('./ws-relay');
@@ -145,6 +146,8 @@ const TASK_QUEUE = 'tasks';
 const taskQueue = new Queue(TASK_QUEUE, {
   connection: new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: null }),
 });
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 
 ensureBaseConfig();
 
@@ -2990,7 +2993,7 @@ app.post('/voice/session', authenticate, async (req, res) => {
 
   try {
     const { rows: [agent] } = await pool.query(
-      'SELECT id, persona FROM agents WHERE id = $1 AND user_id = $2',
+      'SELECT id, name, persona, openclaw_agent_id FROM agents WHERE id = $1 AND user_id = $2',
       [agentId, req.userId],
     );
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
@@ -2998,20 +3001,140 @@ app.post('/voice/session', authenticate, async (req, res) => {
     const openaiKey = process.env.OPENAI_API_KEY;
     if (!openaiKey) return res.status(503).json({ error: 'Voice not configured' });
 
+    const ocAgentId = agent.openclaw_agent_id || openclawAgentId(req.userId, agentId);
+    const OC_HOME = process.env.OPENCLAW_HOME || '/openclaw-home';
+
+    // 1. Load agent's AGENTS.md for identity/persona context
+    let agentIdentity = '';
+    try {
+      const agentsMdPath = path.join(OC_HOME, 'workspaces', ocAgentId, 'AGENTS.md');
+      if (fs.existsSync(agentsMdPath)) {
+        const raw = fs.readFileSync(agentsMdPath, 'utf8');
+        // Extract just the identity/persona section (first ~800 chars) to stay concise
+        const truncated = raw.length > 800 ? raw.slice(0, 800) + '\n...' : raw;
+        agentIdentity = truncated;
+      }
+    } catch (err) {
+      console.warn('[voice session] failed to read AGENTS.md:', err.message);
+    }
+
+    // 2. Load installed skills from DB + workspace
+    const { rows: skills } = await pool.query(
+      `SELECT skill_id, name, icon, enabled FROM agent_skills WHERE agent_id = $1 AND enabled = true ORDER BY installed_at`,
+      [agentId],
+    );
+    let skillDescriptions = [];
+    for (const skill of skills) {
+      try {
+        const skillMdPath = path.join(OC_HOME, 'workspaces', ocAgentId, 'skills', skill.skill_id, 'SKILL.md');
+        if (fs.existsSync(skillMdPath)) {
+          const meta = parseSkillMd(skillMdPath);
+          skillDescriptions.push({
+            id: skill.skill_id,
+            name: meta.name || skill.name || skill.skill_id,
+            description: meta.description || '',
+          });
+        } else {
+          skillDescriptions.push({
+            id: skill.skill_id,
+            name: skill.name || skill.skill_id,
+            description: '',
+          });
+        }
+      } catch {
+        skillDescriptions.push({ id: skill.skill_id, name: skill.name || skill.skill_id, description: '' });
+      }
+    }
+
+    // 3. Load conversation history (last 5 exchanges for summary)
+    const history = await loadConversationHistory(agentId, req.userId);
+    const recentHistory = history.slice(-10); // last 5 exchanges (user+assistant pairs)
+    let conversationSummary = '';
+    if (recentHistory.length > 0) {
+      const summaryParts = [];
+      for (let i = 0; i < recentHistory.length; i += 2) {
+        const userMsg = recentHistory[i]?.content;
+        const asstMsg = recentHistory[i + 1]?.content;
+        if (userMsg && asstMsg) {
+          const userSnippet = typeof userMsg === 'string' ? userMsg.slice(0, 150) : '[complex message]';
+          const asstSnippet = typeof asstMsg === 'string' ? asstMsg.slice(0, 150) : '[complex response]';
+          summaryParts.push(`User: ${userSnippet}${userMsg.length > 150 ? '...' : ''}\nAssistant: ${asstSnippet}${asstMsg.length > 150 ? '...' : ''}`);
+        }
+      }
+      if (summaryParts.length > 0) {
+        conversationSummary = `\n\nRECENT CONVERSATION CONTEXT:\n${summaryParts.join('\n---\n')}`;
+      }
+    }
+
+    // 4. Build rich instructions
     const basePrompt = VOICE_PERSONA_INSTRUCTIONS[agent.persona] || VOICE_PERSONA_INSTRUCTIONS.Professional;
+
+    let skillsSection = '';
+    if (skillDescriptions.length > 0) {
+      const skillList = skillDescriptions.map(s =>
+        `- ${s.name}: ${s.description || 'No description'}`
+      ).join('\n');
+      skillsSection = `\n\nYOUR INSTALLED CAPABILITIES:\n${skillList}\nUse the corresponding tool or run_task to invoke any of these capabilities.`;
+    }
+
+    const identitySection = agentIdentity
+      ? `\n\nAGENT IDENTITY & INSTRUCTIONS:\n${agentIdentity}`
+      : '';
+
     const instructions = `${basePrompt}
 
-You are speaking in a real-time voice conversation. Keep responses concise — aim for 2-3 sentences unless asked for detail.
+You are speaking in a real-time voice conversation. Keep responses concise — aim for 2-3 sentences unless asked for detail.${identitySection}${skillsSection}${conversationSummary}
 
-CRITICAL: You have a tool called run_task. You MUST use it whenever:
+CRITICAL TOOL USAGE: You have tools available. You MUST use them whenever:
 - The user asks for current/recent information (news, weather, prices, events)
 - The user asks you to search, look up, or find something
-- The user asks you to send an email, check a calendar, or do any action
+- The user asks you to perform any action (send email, check calendar, query data, etc.)
 - You are unsure about facts or need to verify something
-- The user mentions anything that requires real-time data
+- The user mentions anything that requires real-time data or an installed skill
 
-You DO have internet access through run_task. NEVER say you cannot access the internet or search the web. Instead, call run_task with a clear description of what to do. After the result comes back, summarize it naturally in speech.`;
+You DO have internet access through your tools. NEVER say you cannot access the internet or search the web. Instead, call the appropriate tool with a clear description. After the result comes back, summarize it naturally in speech.`;
 
+    // 5. Build tool definitions: per-skill tools + general run_task
+    const tools = [];
+
+    // Register per-skill tools (up to 8 to stay under Realtime API limits)
+    for (const skill of skillDescriptions.slice(0, 8)) {
+      const toolName = `skill_${skill.id.replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 40)}`;
+      tools.push({
+        type: 'function',
+        name: toolName,
+        description: `Use the "${skill.name}" skill. ${skill.description || `Invoke the ${skill.name} capability.`}`,
+        parameters: {
+          type: 'object',
+          properties: {
+            task_description: {
+              type: 'string',
+              description: `Describe what you want the ${skill.name} skill to do, including all relevant details`,
+            },
+          },
+          required: ['task_description'],
+        },
+      });
+    }
+
+    // Always include general run_task as fallback
+    tools.push({
+      type: 'function',
+      name: 'run_task',
+      description: 'Run a general task using the AI agent with full tool access (web search, code execution, file operations, etc.). Use this for anything not covered by a specific skill tool, or when you need multiple capabilities combined.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task_description: {
+            type: 'string',
+            description: 'Clear description of what to do, including all relevant details from the conversation',
+          },
+        },
+        required: ['task_description'],
+      },
+    });
+
+    // 6. Create OpenAI Realtime session
     const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
       method: 'POST',
       headers: {
@@ -3022,21 +3145,7 @@ You DO have internet access through run_task. NEVER say you cannot access the in
         model: 'gpt-4o-realtime-preview',
         voice: 'alloy',
         instructions,
-        tools: [{
-          type: 'function',
-          name: 'run_task',
-          description: 'Run a task using the AI agent with all its installed skills (web search, email, code execution, calendar, etc.). Use this when the user asks you to DO something, LOOK UP something, or needs information you do not have.',
-          parameters: {
-            type: 'object',
-            properties: {
-              task_description: {
-                type: 'string',
-                description: 'Clear description of what to do, including all relevant details from the conversation',
-              },
-            },
-            required: ['task_description'],
-          },
-        }],
+        tools,
         input_audio_transcription: { model: 'whisper-1' },
         turn_detection: { type: 'server_vad', threshold: 0.6, prefix_padding_ms: 500, silence_duration_ms: 1200 },
       }),
@@ -3049,10 +3158,45 @@ You DO have internet access through run_task. NEVER say you cannot access the in
     }
 
     const data = await response.json();
+
+    // 7. Build conversation items for iOS to inject via conversation.item.create
+    const conversationItems = [];
+    const injectHistory = history.slice(-10); // last 5 exchanges
+    for (let i = 0; i < injectHistory.length; i += 2) {
+      const userMsg = injectHistory[i];
+      const asstMsg = injectHistory[i + 1];
+      if (userMsg && asstMsg) {
+        const userText = typeof userMsg.content === 'string'
+          ? userMsg.content.slice(0, 300) : '[complex message]';
+        const asstText = typeof asstMsg.content === 'string'
+          ? asstMsg.content.slice(0, 300) : '[complex response]';
+        conversationItems.push(
+          { role: 'user', text: userText },
+          { role: 'assistant', text: asstText },
+        );
+      }
+    }
+
+    // 8. Store session state in Redis for text/voice continuity
+    const sessionKey = `voice_session:${req.userId}:${agentId}`;
+    const sessionState = {
+      userId: req.userId,
+      agentId,
+      ocAgentId,
+      startedAt: Date.now(),
+      skills: skillDescriptions.map(s => s.name),
+      model: data.model,
+    };
+    await redis.set(sessionKey, JSON.stringify(sessionState), 'EX', 1800); // 30 min TTL
+
+    console.log(`[voice session] created for agent=${ocAgentId} skills=${skillDescriptions.length} historyItems=${conversationItems.length}`);
+
     res.json({
       token: data.client_secret.value,
       expiresAt: data.client_secret.expires_at,
       model: data.model,
+      conversationItems,
+      skills: skillDescriptions.map(s => ({ id: s.id, name: s.name })),
     });
   } catch (err) {
     console.error('voice session:', err);
@@ -3063,6 +3207,7 @@ You DO have internet access through run_task. NEVER say you cannot access the in
 app.post('/voice/tool-call', authenticate, async (req, res) => {
   const agentId = req.body.agentId || req.body.agent_id;
   const taskDescription = req.body.taskDescription || req.body.task_description;
+  const skillName = req.body.skillName || req.body.skill_name;
 
   if (!agentId || !taskDescription) {
     return res.status(400).json({ error: 'agentId and taskDescription are required' });
@@ -3075,21 +3220,36 @@ app.post('/voice/tool-call', authenticate, async (req, res) => {
     );
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
 
-    const ocAgentId = agent.openclaw_agent_id || openclawAgentId(agent.id);
+    const ocAgentId = agent.openclaw_agent_id || openclawAgentId(req.userId, agentId);
 
-    console.log(`[voice tool-call] agent=${ocAgentId} task="${taskDescription.slice(0, 100)}"`);
+    console.log(`[voice tool-call] agent=${ocAgentId} skill=${skillName || 'general'} task="${taskDescription.slice(0, 100)}"`);
 
     ensureWorkspaceReady(ocAgentId);
     await refreshOAuthTokensForAgent(agentId, req.userId);
 
+    const OC_HOME = process.env.OPENCLAW_HOME || '/openclaw-home';
+    let systemPrompt = 'You are handling a voice assistant request. Use your available tools to fulfill the request. Provide a clear, concise text result.';
+    try {
+      const agentsMdPath = path.join(OC_HOME, 'workspaces', ocAgentId, 'AGENTS.md');
+      if (fs.existsSync(agentsMdPath)) {
+        const agentsMd = fs.readFileSync(agentsMdPath, 'utf8');
+        systemPrompt = agentsMd + '\n\nIMPORTANT: This request comes from a voice conversation. Provide a clear, concise text result that can be spoken aloud. Do NOT say you cannot access the internet — you have web search available.';
+      }
+    } catch (err) {
+      console.warn('[voice tool-call] failed to read AGENTS.md:', err.message);
+    }
+
+    // If a specific skill was invoked, prepend skill context to the task
+    let enrichedTask = taskDescription;
+    if (skillName) {
+      enrichedTask = `[Using skill: ${skillName}] ${taskDescription}`;
+    }
+
     const history = await loadConversationHistory(agentId, req.userId);
     const messages = [
-      {
-        role: 'system',
-        content: 'You are handling a voice assistant request. Use your available tools (web search, code execution, etc.) to fulfill the request. Provide a clear, concise text result. Do NOT say you cannot access the internet — you have web search available.',
-      },
+      { role: 'system', content: systemPrompt },
       ...history,
-      { role: 'user', content: taskDescription },
+      { role: 'user', content: enrichedTask },
     ];
 
     const response = await chatCompletionSync({
@@ -3106,11 +3266,24 @@ app.post('/voice/tool-call', authenticate, async (req, res) => {
     const result = content || 'The task completed but produced no text output.';
     const trimmedResult = result.slice(0, 4000);
 
+    const inputLabel = skillName ? `🎙️🔧 [${skillName}] ${taskDescription}` : `🎙️ ${taskDescription}`;
     await pool.query(
       `INSERT INTO tasks (agent_id, user_id, input, output, status, completed_at)
        VALUES ($1, $2, $3, $4, 'completed', NOW())`,
-      [agentId, req.userId, `[Voice] ${taskDescription}`, trimmedResult],
+      [agentId, req.userId, inputLabel, trimmedResult],
     );
+
+    // Update Redis session state with last tool call info
+    try {
+      const sessionKey = `voice_session:${req.userId}:${agentId}`;
+      const existing = await redis.get(sessionKey);
+      if (existing) {
+        const state = JSON.parse(existing);
+        state.lastToolCall = { skill: skillName || 'run_task', at: Date.now() };
+        state.toolCallCount = (state.toolCallCount || 0) + 1;
+        await redis.set(sessionKey, JSON.stringify(state), 'EX', 1800);
+      }
+    } catch { /* non-fatal */ }
 
     res.json({ result: trimmedResult });
   } catch (err) {
@@ -3151,9 +3324,27 @@ app.post('/voice/transcript', authenticate, async (req, res) => {
       saved++;
     }
 
+    // Clear the voice session state in Redis now that session ended
+    try {
+      await redis.del(`voice_session:${req.userId}:${agentId}`);
+    } catch { /* non-fatal */ }
+
     res.json({ saved });
   } catch (err) {
     console.error('voice transcript:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Voice session state — allows text mode to detect active voice sessions
+app.get('/voice/session-state/:agentId', authenticate, async (req, res) => {
+  try {
+    const sessionKey = `voice_session:${req.userId}:${req.params.agentId}`;
+    const state = await redis.get(sessionKey);
+    if (!state) return res.json({ active: false });
+    res.json({ active: true, ...JSON.parse(state) });
+  } catch (err) {
+    console.error('voice session-state:', err);
     res.status(500).json({ error: 'Internal error' });
   }
 });

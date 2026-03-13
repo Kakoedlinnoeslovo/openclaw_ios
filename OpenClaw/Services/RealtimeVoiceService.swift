@@ -78,6 +78,10 @@ final class RealtimeVoiceService: @unchecked Sendable {
     private var currentFunctionCallId: String?
     private var currentFunctionName: String?
     private var functionArguments = ""
+    private var pendingConversationItems: [ConversationItem] = []
+    private var conversationTurns: [(user: String, agent: String)] = []
+    private var lastUserTranscript = ""
+    private var lastAgentTranscript = ""
 
     private let queue = DispatchQueue(label: "com.openclaw.voice", qos: .userInteractive)
 
@@ -91,6 +95,8 @@ final class RealtimeVoiceService: @unchecked Sendable {
             "/voice/session",
             body: VoiceSessionRequest(agentId: agentId)
         )
+
+        pendingConversationItems = tokenResponse.conversationItems ?? []
 
         let urlString = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
         guard let url = URL(string: urlString) else {
@@ -124,6 +130,7 @@ final class RealtimeVoiceService: @unchecked Sendable {
         webSocket = nil
 
         reportUsage()
+        persistTranscript()
 
         state = .idle
         agentTranscript = ""
@@ -140,6 +147,10 @@ final class RealtimeVoiceService: @unchecked Sendable {
         currentFunctionCallId = nil
         currentFunctionName = nil
         functionArguments = ""
+        pendingConversationItems = []
+        conversationTurns = []
+        lastUserTranscript = ""
+        lastAgentTranscript = ""
     }
 
     func toggleMute() {
@@ -340,6 +351,9 @@ final class RealtimeVoiceService: @unchecked Sendable {
         switch type {
 
         case "session.created", "session.updated":
+            if type == "session.created" {
+                injectConversationHistory()
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 if self.state == .connecting {
@@ -366,8 +380,10 @@ final class RealtimeVoiceService: @unchecked Sendable {
 
         case "conversation.item.input_audio_transcription.completed":
             if let transcript = json["transcript"] as? String {
+                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                lastUserTranscript = trimmed
                 DispatchQueue.main.async { [weak self] in
-                    self?.userTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self?.userTranscript = trimmed
                 }
             }
 
@@ -412,6 +428,7 @@ final class RealtimeVoiceService: @unchecked Sendable {
 
         case "response.audio_transcript.done":
             if let transcript = json["transcript"] as? String {
+                lastAgentTranscript = transcript
                 DispatchQueue.main.async { [weak self] in
                     self?.agentTranscript = transcript
                 }
@@ -443,6 +460,12 @@ final class RealtimeVoiceService: @unchecked Sendable {
             if let responseId, responseId == currentResponseId {
                 queue.sync { responseFullyDone = true }
                 checkPlaybackComplete()
+                // Record conversation turn for transcript persistence
+                if !lastUserTranscript.isEmpty || !lastAgentTranscript.isEmpty {
+                    conversationTurns.append((user: lastUserTranscript, agent: lastAgentTranscript))
+                    lastUserTranscript = ""
+                    lastAgentTranscript = ""
+                }
             }
 
         case "error":
@@ -458,8 +481,14 @@ final class RealtimeVoiceService: @unchecked Sendable {
 
     // MARK: - Function calling
 
+    private static let toolCallTimeout: TimeInterval = 60
+
     private func handleFunctionCall(callId: String, name: String, arguments: String) {
-        guard name == "run_task", let agentId else { return }
+        guard let agentId else { return }
+
+        // Support both "run_task" and per-skill tools (prefixed with "skill_")
+        let isSkillTool = name.hasPrefix("skill_")
+        guard name == "run_task" || isSkillTool else { return }
 
         var taskDescription = ""
         if let data = arguments.data(using: .utf8),
@@ -473,6 +502,8 @@ final class RealtimeVoiceService: @unchecked Sendable {
             return
         }
 
+        let skillName: String? = isSkillTool ? String(name.dropFirst(6)) : nil
+
         DispatchQueue.main.async { [weak self] in
             self?.state = .toolRunning
             self?.agentTranscript = "Running task…"
@@ -480,13 +511,24 @@ final class RealtimeVoiceService: @unchecked Sendable {
 
         Task {
             do {
-                let response: ToolCallResponse = try await APIClient.shared.post(
-                    "/voice/tool-call",
-                    body: ToolCallRequest(agentId: agentId, taskDescription: taskDescription)
-                )
+                let response: ToolCallResponse = try await withThrowingTimeout(
+                    seconds: Self.toolCallTimeout
+                ) {
+                    try await APIClient.shared.post(
+                        "/voice/tool-call",
+                        body: ToolCallRequest(
+                            agentId: agentId,
+                            taskDescription: taskDescription,
+                            skillName: skillName
+                        )
+                    )
+                }
                 sendFunctionResult(callId: callId, result: response.result)
             } catch {
-                sendFunctionResult(callId: callId, result: "Task failed: \(error.localizedDescription)")
+                let message = error is TimeoutError
+                    ? "The task took too long and timed out. Please try again with a simpler request."
+                    : "Task failed: \(error.localizedDescription)"
+                sendFunctionResult(callId: callId, result: message)
             }
         }
     }
@@ -507,6 +549,49 @@ final class RealtimeVoiceService: @unchecked Sendable {
             guard let self else { return }
             self.agentTranscript = ""
             self.state = .thinking
+        }
+    }
+
+    // MARK: - Conversation history injection
+
+    private func injectConversationHistory() {
+        guard !pendingConversationItems.isEmpty else { return }
+
+        for item in pendingConversationItems {
+            let contentType = item.role == "user" ? "input_text" : "text"
+            let conversationItem: [String: Any] = [
+                "type": "conversation.item.create",
+                "item": [
+                    "type": "message",
+                    "role": item.role,
+                    "content": [
+                        ["type": contentType, "text": item.text]
+                    ],
+                ] as [String: Any],
+            ]
+            sendEvent(conversationItem)
+        }
+        pendingConversationItems = []
+    }
+
+    // MARK: - Transcript persistence
+
+    private func persistTranscript() {
+        let turnsToSave = conversationTurns.filter { !$0.user.isEmpty || !$0.agent.isEmpty }
+        guard let agentId, !turnsToSave.isEmpty else { return }
+
+        let turns = turnsToSave.map { TranscriptTurn(userText: $0.user, agentText: $0.agent) }
+        let request = TranscriptRequest(agentId: agentId, turns: turns)
+
+        Task {
+            do {
+                let _: TranscriptResponse = try await APIClient.shared.post(
+                    "/voice/transcript",
+                    body: request
+                )
+            } catch {
+                print("[Voice] Failed to persist transcript: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -577,11 +662,24 @@ private struct VoiceSessionResponse: Decodable {
     let token: String
     let expiresAt: Int?
     let model: String?
+    let conversationItems: [ConversationItem]?
+    let skills: [VoiceSkill]?
+}
+
+private struct ConversationItem: Decodable {
+    let role: String
+    let text: String
+}
+
+private struct VoiceSkill: Decodable {
+    let id: String
+    let name: String
 }
 
 private struct ToolCallRequest: Encodable {
     let agentId: String
     let taskDescription: String
+    let skillName: String?
 }
 
 private struct ToolCallResponse: Decodable {
@@ -594,4 +692,40 @@ private struct UsageRequest: Encodable {
 
 private struct UsageResponse: Decodable {
     let recorded: Int?
+}
+
+private struct TranscriptTurn: Encodable {
+    let userText: String
+    let agentText: String
+}
+
+private struct TranscriptRequest: Encodable {
+    let agentId: String
+    let turns: [TranscriptTurn]
+}
+
+private struct TranscriptResponse: Decodable {
+    let saved: Int?
+}
+
+// MARK: - Timeout helper
+
+private struct TimeoutError: Error, LocalizedError {
+    var errorDescription: String? { "Request timed out" }
+}
+
+private func withThrowingTimeout<T: Sendable>(
+    seconds: TimeInterval,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw TimeoutError()
+        }
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
+    }
 }
