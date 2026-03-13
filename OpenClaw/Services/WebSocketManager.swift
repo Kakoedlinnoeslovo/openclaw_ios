@@ -90,6 +90,11 @@ final class WebSocketManager {
                     taskId: event.taskId,
                     toolName: event.toolName ?? "unknown"
                 )
+            case .heartbeat:
+                TaskService.shared.handleHeartbeat(
+                    taskId: event.taskId,
+                    elapsedSeconds: event.elapsedSeconds ?? 0
+                )
             }
         }
     }

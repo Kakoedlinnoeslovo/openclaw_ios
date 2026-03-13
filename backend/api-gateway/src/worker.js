@@ -152,6 +152,8 @@ const worker = new Worker(
     const { taskId, agentId, openclawAgentId: ocAgentId, userId, input, fileIds, imageData } = job.data;
     console.log(`[worker] processing task=${taskId} agent=${ocAgentId} files=${(fileIds || []).length}`);
 
+    let fullOutput = '';
+
     try {
       await pool.query("UPDATE tasks SET status = 'running' WHERE id = $1", [taskId]);
       publish(userId, { type: 'task:progress', task_id: taskId, content: '' });
@@ -167,56 +169,69 @@ const worker = new Worker(
       const history = await loadConversationHistory(agentId, userId);
       const messages = [...history, { role: 'user', content: userContent }];
 
-      let fullOutput = '';
       let currentToolCall = null;
       let lastUsage = null;
+      const startedAt = Date.now();
 
-      for await (const chunk of chatCompletionStream({
-        agentId: ocAgentId,
-        messages,
-        userId,
-      })) {
-        if (chunk.usage) lastUsage = chunk.usage;
+      const heartbeat = setInterval(() => {
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        publish(userId, {
+          type: 'task:heartbeat',
+          task_id: taskId,
+          elapsed_seconds: elapsed,
+        });
+      }, 5000);
 
-        const choice = chunk.choices?.[0];
-        if (!choice) continue;
+      try {
+        for await (const chunk of chatCompletionStream({
+          agentId: ocAgentId,
+          messages,
+          userId,
+        })) {
+          if (chunk.usage) lastUsage = chunk.usage;
 
-        const delta = choice.delta || {};
+          const choice = chunk.choices?.[0];
+          if (!choice) continue;
 
-        if (delta.content) {
-          fullOutput += delta.content;
-          publish(userId, { type: 'task:progress', task_id: taskId, content: delta.content });
-        }
+          const delta = choice.delta || {};
 
-        if (delta.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            if (tc.function?.name) {
-              currentToolCall = {
-                id: tc.id || currentToolCall?.id,
-                name: tc.function.name,
-                arguments: tc.function.arguments || '',
-              };
-              publish(userId, {
-                type: 'task:tool_start',
-                task_id: taskId,
-                tool_name: tc.function.name,
-                tool_call_id: tc.id,
-              });
-            } else if (tc.function?.arguments && currentToolCall) {
-              currentToolCall.arguments += tc.function.arguments;
+          if (delta.content) {
+            fullOutput += delta.content;
+            publish(userId, { type: 'task:progress', task_id: taskId, content: delta.content });
+          }
+
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              if (tc.function?.name) {
+                currentToolCall = {
+                  id: tc.id || currentToolCall?.id,
+                  name: tc.function.name,
+                  arguments: tc.function.arguments || '',
+                };
+                publish(userId, {
+                  type: 'task:tool_start',
+                  task_id: taskId,
+                  tool_name: tc.function.name,
+                  tool_call_id: tc.id,
+                });
+              } else if (tc.function?.arguments && currentToolCall) {
+                currentToolCall.arguments += tc.function.arguments;
+              }
             }
           }
-        }
 
-        if (choice.finish_reason === 'tool_calls' && currentToolCall) {
-          publish(userId, {
-            type: 'task:tool_end',
-            task_id: taskId,
-            tool_name: currentToolCall.name,
-            tool_call_id: currentToolCall.id,
-          });
-          currentToolCall = null;
+          if (choice.finish_reason === 'tool_calls' && currentToolCall) {
+            publish(userId, {
+              type: 'task:tool_end',
+              task_id: taskId,
+              tool_name: currentToolCall.name,
+              tool_call_id: currentToolCall.id,
+            });
+            currentToolCall = null;
+          }
         }
+      } finally {
+        clearInterval(heartbeat);
       }
 
       const tokensUsed = lastUsage?.total_tokens
@@ -242,13 +257,22 @@ const worker = new Worker(
     } catch (err) {
       console.error(`[worker] task=${taskId} failed:`, err.message);
 
-      await pool.query(
-        "UPDATE tasks SET status='failed', output=$1, completed_at=NOW() WHERE id=$2",
-        [err.message, taskId],
-      );
-
-      publish(userId, { type: 'task:error', task_id: taskId, error: err.message });
-      throw err;
+      const hasPartialOutput = fullOutput && fullOutput.trim().length > 0;
+      if (hasPartialOutput) {
+        console.log(`[worker] task=${taskId} has partial output (${fullOutput.length} chars), saving as completed`);
+        await pool.query(
+          `UPDATE tasks SET status='completed', output=$1, completed_at=NOW() WHERE id=$2`,
+          [fullOutput, taskId],
+        );
+        publish(userId, { type: 'task:complete', task_id: taskId });
+      } else {
+        await pool.query(
+          "UPDATE tasks SET status='failed', output=$1, completed_at=NOW() WHERE id=$2",
+          [err.message, taskId],
+        );
+        publish(userId, { type: 'task:error', task_id: taskId, error: err.message });
+        throw err;
+      }
     }
   },
   {

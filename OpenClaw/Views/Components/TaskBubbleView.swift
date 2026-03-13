@@ -421,7 +421,20 @@ struct TaskBubbleView: View {
         if let active = task.toolSteps.last(where: { !$0.isDone }) {
             return active.displayName + "…"
         }
+        if task.elapsedSeconds > 0 {
+            return "Thinking (\(formattedElapsed))…"
+        }
         return "Thinking"
+    }
+
+    private var formattedElapsed: String {
+        let seconds = task.elapsedSeconds
+        if seconds < 60 {
+            return "\(seconds)s"
+        }
+        let m = seconds / 60
+        let s = seconds % 60
+        return s > 0 ? "\(m)m \(s)s" : "\(m)m"
     }
 
     private var errorBubble: some View {

@@ -54,6 +54,8 @@ struct TaskItem: Codable, Identifiable, Equatable {
     var fileIds: [String]?
 
     var toolSteps: [ToolStep] = []
+    var runningStartedAt: Date?
+    var elapsedSeconds: Int = 0
 
     enum CodingKeys: String, CodingKey {
         case id, agentId, input, output, status, createdAt, completedAt, tokensUsed, fileIds
@@ -86,6 +88,7 @@ struct TaskStreamEvent: Codable {
     let error: String?
     let toolName: String?
     let toolCallId: String?
+    let elapsedSeconds: Int?
 
     enum StreamEventType: String, Codable {
         case progress = "task:progress"
@@ -93,6 +96,7 @@ struct TaskStreamEvent: Codable {
         case error = "task:error"
         case toolStart = "task:tool_start"
         case toolEnd = "task:tool_end"
+        case heartbeat = "task:heartbeat"
     }
 }
 

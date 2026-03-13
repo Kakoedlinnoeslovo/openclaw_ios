@@ -71,17 +71,22 @@ final class TaskService {
         guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
         switch status {
         case .running:
+            if tasks[index].runningStartedAt == nil {
+                tasks[index].runningStartedAt = Date()
+            }
             if let content {
                 tasks[index].output = (tasks[index].output ?? "") + content
             }
         case .completed:
             tasks[index].completedAt = Date()
             tasks[index].toolSteps.removeAll()
+            tasks[index].elapsedSeconds = 0
         case .failed:
             if let content {
                 tasks[index].output = content
             }
             tasks[index].toolSteps.removeAll()
+            tasks[index].elapsedSeconds = 0
         default:
             break
         }
@@ -97,6 +102,14 @@ final class TaskService {
         guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
         if let stepIndex = tasks[index].toolSteps.lastIndex(where: { $0.name == toolName && !$0.isDone }) {
             tasks[index].toolSteps[stepIndex].isDone = true
+        }
+    }
+
+    func handleHeartbeat(taskId: String, elapsedSeconds: Int) {
+        guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        tasks[index].elapsedSeconds = elapsedSeconds
+        if tasks[index].runningStartedAt == nil {
+            tasks[index].runningStartedAt = Date()
         }
     }
 }
