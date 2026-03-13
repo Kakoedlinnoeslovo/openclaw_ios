@@ -116,6 +116,7 @@ CREATE TABLE usage_daily (
     date DATE NOT NULL DEFAULT CURRENT_DATE,
     tasks_count INTEGER NOT NULL DEFAULT 0,
     tokens_used INTEGER NOT NULL DEFAULT 0,
+    voice_seconds INTEGER NOT NULL DEFAULT 0,
     UNIQUE(user_id, date)
 );
 

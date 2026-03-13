@@ -10,16 +10,18 @@ const multer = require('multer');
 const { Queue } = require('bullmq');
 const Redis = require('ioredis');
 
-const { healthCheck: ocHealthCheck } = require('./openclaw-client');
+const { healthCheck: ocHealthCheck, chatCompletionSync } = require('./openclaw-client');
 const {
   ensureBaseConfig, provisionAgent, deprovisionAgent, updateAgentConfig,
   installSkill, uninstallSkill, installStarterSkills,
   setSkillEnabled, getSkillConfig, setSkillConfig,
   installClawHubSkill, setSkillCredentials, extractInstallCommands,
   detectSetupRequirements, parseSkillMd,
-  openclawAgentId, ensureAgentsMdPatched, PERSONA_RECOMMENDATIONS, VALID_MODELS,
+  openclawAgentId, ensureAgentsMdPatched, ensureWorkspaceReady,
+  PERSONA_RECOMMENDATIONS, VALID_MODELS,
 } = require('./provisioner');
 const { createWSRelay } = require('./ws-relay');
+const { refreshOAuthTokensForAgent, loadConversationHistory } = require('./task-helpers');
 
 // Swift's .iso8601 decoder rejects fractional seconds — strip them.
 pg.types.setTypeParser(1184, (val) =>
@@ -2967,6 +2969,214 @@ app.get('/oauth/:provider/status-global', authenticate, async (req, res) => {
     });
   } catch (err) {
     console.error('oauth status-global:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// ──────────────────────────────────────────────
+// Voice – OpenAI Realtime API session creation
+// ──────────────────────────────────────────────
+
+const VOICE_PERSONA_INSTRUCTIONS = {
+  Professional: 'You are a professional, business-oriented AI assistant. Be clear, concise, and action-oriented.',
+  Friendly: 'You are a warm, approachable AI assistant. Be conversational and encouraging.',
+  Technical: 'You are a technical AI assistant. Be detailed, precise, and data-driven.',
+  Creative: 'You are a creative AI assistant. Be imaginative, expressive, and open to new ideas.',
+};
+
+app.post('/voice/session', authenticate, async (req, res) => {
+  const agentId = req.body.agentId || req.body.agent_id;
+  if (!agentId) return res.status(400).json({ error: 'agentId is required' });
+
+  try {
+    const { rows: [agent] } = await pool.query(
+      'SELECT id, persona FROM agents WHERE id = $1 AND user_id = $2',
+      [agentId, req.userId],
+    );
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (!openaiKey) return res.status(503).json({ error: 'Voice not configured' });
+
+    const basePrompt = VOICE_PERSONA_INSTRUCTIONS[agent.persona] || VOICE_PERSONA_INSTRUCTIONS.Professional;
+    const instructions = `${basePrompt}
+
+You are speaking in a real-time voice conversation. Keep responses concise — aim for 2-3 sentences unless asked for detail.
+
+CRITICAL: You have a tool called run_task. You MUST use it whenever:
+- The user asks for current/recent information (news, weather, prices, events)
+- The user asks you to search, look up, or find something
+- The user asks you to send an email, check a calendar, or do any action
+- You are unsure about facts or need to verify something
+- The user mentions anything that requires real-time data
+
+You DO have internet access through run_task. NEVER say you cannot access the internet or search the web. Instead, call run_task with a clear description of what to do. After the result comes back, summarize it naturally in speech.`;
+
+    const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-realtime-preview',
+        voice: 'alloy',
+        instructions,
+        tools: [{
+          type: 'function',
+          name: 'run_task',
+          description: 'Run a task using the AI agent with all its installed skills (web search, email, code execution, calendar, etc.). Use this when the user asks you to DO something, LOOK UP something, or needs information you do not have.',
+          parameters: {
+            type: 'object',
+            properties: {
+              task_description: {
+                type: 'string',
+                description: 'Clear description of what to do, including all relevant details from the conversation',
+              },
+            },
+            required: ['task_description'],
+          },
+        }],
+        input_audio_transcription: { model: 'whisper-1' },
+        turn_detection: { type: 'server_vad', threshold: 0.6, prefix_padding_ms: 500, silence_duration_ms: 1200 },
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      console.error('OpenAI realtime session error:', response.status, body);
+      return res.status(502).json({ error: 'Failed to create voice session' });
+    }
+
+    const data = await response.json();
+    res.json({
+      token: data.client_secret.value,
+      expiresAt: data.client_secret.expires_at,
+      model: data.model,
+    });
+  } catch (err) {
+    console.error('voice session:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.post('/voice/tool-call', authenticate, async (req, res) => {
+  const agentId = req.body.agentId || req.body.agent_id;
+  const taskDescription = req.body.taskDescription || req.body.task_description;
+
+  if (!agentId || !taskDescription) {
+    return res.status(400).json({ error: 'agentId and taskDescription are required' });
+  }
+
+  try {
+    const { rows: [agent] } = await pool.query(
+      'SELECT id, user_id, openclaw_agent_id FROM agents WHERE id = $1 AND user_id = $2',
+      [agentId, req.userId],
+    );
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+    const ocAgentId = agent.openclaw_agent_id || openclawAgentId(agent.id);
+
+    console.log(`[voice tool-call] agent=${ocAgentId} task="${taskDescription.slice(0, 100)}"`);
+
+    ensureWorkspaceReady(ocAgentId);
+    await refreshOAuthTokensForAgent(agentId, req.userId);
+
+    const history = await loadConversationHistory(agentId, req.userId);
+    const messages = [
+      {
+        role: 'system',
+        content: 'You are handling a voice assistant request. Use your available tools (web search, code execution, etc.) to fulfill the request. Provide a clear, concise text result. Do NOT say you cannot access the internet — you have web search available.',
+      },
+      ...history,
+      { role: 'user', content: taskDescription },
+    ];
+
+    const response = await chatCompletionSync({
+      agentId: ocAgentId,
+      messages,
+      userId: req.userId,
+    });
+
+    const choice = response.choices?.[0];
+    const content = choice?.message?.content;
+
+    console.log(`[voice tool-call] result length=${content?.length || 0} finish=${choice?.finish_reason}`);
+
+    const result = content || 'The task completed but produced no text output.';
+    const trimmedResult = result.slice(0, 4000);
+
+    await pool.query(
+      `INSERT INTO tasks (agent_id, user_id, input, output, status, completed_at)
+       VALUES ($1, $2, $3, $4, 'completed', NOW())`,
+      [agentId, req.userId, `[Voice] ${taskDescription}`, trimmedResult],
+    );
+
+    res.json({ result: trimmedResult });
+  } catch (err) {
+    console.error('voice tool-call error:', err.message || err);
+    res.status(500).json({ result: 'Sorry, the task failed to execute. Please try again.' });
+  }
+});
+
+app.post('/voice/transcript', authenticate, async (req, res) => {
+  const agentId = req.body.agentId || req.body.agent_id;
+  const turns = req.body.turns;
+
+  if (!agentId || !Array.isArray(turns) || turns.length === 0) {
+    return res.status(400).json({ error: 'agentId and turns array are required' });
+  }
+
+  try {
+    const { rows: [agent] } = await pool.query(
+      'SELECT id FROM agents WHERE id = $1 AND user_id = $2',
+      [agentId, req.userId],
+    );
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+    let saved = 0;
+    for (const turn of turns) {
+      const userText = turn.userText || turn.user_text || '';
+      const agentText = turn.agentText || turn.agent_text || '';
+      if (!userText && !agentText) continue;
+
+      const input = userText || '[Voice conversation]';
+      const output = agentText || '[No response]';
+
+      await pool.query(
+        `INSERT INTO tasks (agent_id, user_id, input, output, status, completed_at)
+         VALUES ($1, $2, $3, $4, 'completed', NOW())`,
+        [agentId, req.userId, `🎙️ ${input}`, output],
+      );
+      saved++;
+    }
+
+    res.json({ saved });
+  } catch (err) {
+    console.error('voice transcript:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.post('/voice/usage', authenticate, async (req, res) => {
+  const { durationSeconds } = req.body;
+  if (!durationSeconds || durationSeconds < 0) {
+    return res.status(400).json({ error: 'durationSeconds is required' });
+  }
+
+  const capped = Math.min(Math.round(durationSeconds), 3600);
+
+  try {
+    await pool.query(
+      `INSERT INTO usage_daily (user_id, date, voice_seconds)
+       VALUES ($1, CURRENT_DATE, $2)
+       ON CONFLICT (user_id, date)
+       DO UPDATE SET voice_seconds = usage_daily.voice_seconds + $2`,
+      [req.userId, capped],
+    );
+    res.json({ recorded: capped });
+  } catch (err) {
+    console.error('voice usage:', err);
     res.status(500).json({ error: 'Internal error' });
   }
 });

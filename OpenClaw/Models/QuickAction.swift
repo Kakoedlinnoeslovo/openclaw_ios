@@ -14,7 +14,7 @@ enum QuickAction: String, CaseIterable, Identifiable {
 
     var needsInput: Bool {
         switch self {
-        case .chat, .create: false
+        case .chat, .create, .voice: false
         default: true
         }
     }
@@ -41,7 +41,7 @@ enum QuickAction: String, CaseIterable, Identifiable {
         case .write: .pink
         case .web: .cyan
         case .vision: .teal
-        case .voice: .purple
+        case .voice: Color(red: 0.45, green: 0.20, blue: 0.95)
         }
     }
 
@@ -54,7 +54,7 @@ enum QuickAction: String, CaseIterable, Identifiable {
         case .write: "Write Something"
         case .web: "Browse the Web"
         case .vision: "Vision AI"
-        case .voice: "Voice Input"
+        case .voice: "Voice Mode"
         }
     }
 
@@ -67,7 +67,7 @@ enum QuickAction: String, CaseIterable, Identifiable {
         case .write: "Create any type of written content"
         case .web: "Search and summarize web content"
         case .vision: "Analyze images or generate visual content"
-        case .voice: "Speak your request naturally"
+        case .voice: "Talk to your agent in real time"
         }
     }
 

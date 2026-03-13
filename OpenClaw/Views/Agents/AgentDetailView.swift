@@ -6,6 +6,7 @@ struct AgentDetailView: View {
 
     @State private var showSkillBrowser = false
     @State private var showChat = false
+    @State private var showVoiceMode = false
     @State private var agentService = AgentService.shared
     @State private var configuringSkill: Agent.InstalledSkill?
 
@@ -50,6 +51,9 @@ struct AgentDetailView: View {
                         }
                     }
             }
+        }
+        .fullScreenCover(isPresented: $showVoiceMode) {
+            VoiceModeView(agent: agent)
         }
     }
 
@@ -100,11 +104,21 @@ struct AgentDetailView: View {
             .tint(theme.accent)
 
             Button {
+                showVoiceMode = true
+            } label: {
+                Label("Talk", systemImage: "mic.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(theme.secondaryAccent)
+
+            Button {
                 showSkillBrowser = true
             } label: {
                 Label("Add Skill", systemImage: "puzzlepiece.fill")
                     .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
             }
             .buttonStyle(.bordered)

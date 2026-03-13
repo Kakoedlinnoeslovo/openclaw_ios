@@ -11,6 +11,7 @@ struct HomeView: View {
     @State private var quickChatState: QuickChatState?
     @State private var activeQuickAction: QuickAction?
     @State private var showSettings = false
+    @State private var showVoiceMode = false
     @State private var googleStatus: GlobalOAuthStatus?
     @State private var isConnectingGoogle = false
     @State private var googleConnectError: String?
@@ -78,6 +79,11 @@ struct HomeView: View {
             .sheet(isPresented: $showSettings) {
                 NavigationStack {
                     SettingsView()
+                }
+            }
+            .fullScreenCover(isPresented: $showVoiceMode) {
+                if let agent = agentService.preferredAgent {
+                    VoiceModeView(agent: agent)
                 }
             }
             .sheet(isPresented: $showOAuthSetup) {
@@ -538,6 +544,12 @@ struct HomeView: View {
                 quickChatState = QuickChatState(agent: agent, initialMessage: nil)
             } else {
                 showCreateAgent = true
+            }
+        case .voice:
+            if agentService.agents.isEmpty {
+                showCreateAgent = true
+            } else {
+                showVoiceMode = true
             }
         default:
             if agentService.agents.isEmpty {

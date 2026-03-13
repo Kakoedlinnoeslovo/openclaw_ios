@@ -51,6 +51,9 @@
 		A1000001000000000000002A /* DocumentPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002A /* DocumentPicker.swift */; };
 		A1000001000000000000002B /* SpeechRecognitionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002B /* SpeechRecognitionService.swift */; };
 		A1000001000000000000002C /* MarkdownTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002C /* MarkdownTextView.swift */; };
+		A1000001000000000000002D /* RealtimeVoiceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002D /* RealtimeVoiceService.swift */; };
+		A1000001000000000000002E /* VoiceModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002E /* VoiceModeView.swift */; };
+		A1000001000000000000002F /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002F /* VoiceOrbView.swift */; };
 		B10000010000000000000001 /* OpenClawUITestBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* OpenClawUITestBase.swift */; };
 		B10000010000000000000002 /* OnboardingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* OnboardingFlowTests.swift */; };
 		B10000010000000000000003 /* PaywallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* PaywallTests.swift */; };
@@ -116,6 +119,9 @@
 		A2000001000000000000002A /* DocumentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPicker.swift; sourceTree = "<group>"; };
 		A2000001000000000000002B /* SpeechRecognitionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognitionService.swift; sourceTree = "<group>"; };
 		A2000001000000000000002C /* MarkdownTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownTextView.swift; sourceTree = "<group>"; };
+		A2000001000000000000002D /* RealtimeVoiceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceService.swift; sourceTree = "<group>"; };
+		A2000001000000000000002E /* VoiceModeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceModeView.swift; sourceTree = "<group>"; };
+		A2000001000000000000002F /* VoiceOrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrbView.swift; sourceTree = "<group>"; };
 		A30000010000000000000001 /* OpenClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000010000000000000001 /* OpenClawUITestBase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawUITestBase.swift; sourceTree = "<group>"; };
 		B20000010000000000000002 /* OnboardingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlowTests.swift; sourceTree = "<group>"; };
@@ -202,6 +208,7 @@
 				A2000001000000000000000E /* WebSocketManager.swift */,
 				A20000010000000000000029 /* OAuthService.swift */,
 				A2000001000000000000002B /* SpeechRecognitionService.swift */,
+				A2000001000000000000002D /* RealtimeVoiceService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -214,6 +221,7 @@
 				A5000001000000000000000A /* Skills */,
 				A5000001000000000000000B /* Tasks */,
 				A5000001000000000000000E /* QuickActions */,
+				A5000001000000000000000F /* Voice */,
 				A5000001000000000000000C /* Paywall */,
 				A5000001000000000000000D /* Components */,
 				A20000010000000000000019 /* SettingsView.swift */,
@@ -300,6 +308,15 @@
 				A20000010000000000000025 /* QuickActionInputView.swift */,
 			);
 			path = QuickActions;
+			sourceTree = "<group>";
+		};
+		A5000001000000000000000F /* Voice */ = {
+			isa = PBXGroup;
+			children = (
+				A2000001000000000000002E /* VoiceModeView.swift */,
+				A2000001000000000000002F /* VoiceOrbView.swift */,
+			);
+			path = Voice;
 			sourceTree = "<group>";
 		};
 		A50000010000000000000099 /* Products */ = {
@@ -460,6 +477,9 @@
 				A10000010000000000000029 /* OAuthService.swift in Sources */,
 				A1000001000000000000002A /* DocumentPicker.swift in Sources */,
 				A1000001000000000000002B /* SpeechRecognitionService.swift in Sources */,
+				A1000001000000000000002D /* RealtimeVoiceService.swift in Sources */,
+				A1000001000000000000002E /* VoiceModeView.swift in Sources */,
+				A1000001000000000000002F /* VoiceOrbView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
