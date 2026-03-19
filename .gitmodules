@@ -1,0 +1,3 @@
+[submodule "backend/openclaw"]
+	path = backend/openclaw
+	url = https://github.com/openclaw/openclaw.git
