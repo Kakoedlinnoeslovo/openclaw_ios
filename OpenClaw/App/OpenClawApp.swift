@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct OpenClawApp: App {
+    @UIApplicationDelegateAdaptor(PushNotificationsDelegate.self) private var pushNotifications
+
     @State private var authService = AuthService.shared
     @State private var subscriptionService = SubscriptionService.shared
     @State private var appTheme = AppTheme.shared

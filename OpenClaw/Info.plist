@@ -17,6 +17,7 @@
 	<string>OpenClaw needs microphone access for voice conversations with your AI agent.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>OpenClaw uses speech recognition for voice input.</string>
+#if DEBUG
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSExceptionDomains</key>
@@ -30,5 +31,6 @@
 			</dict>
 		</dict>
 	</dict>
+#endif
 </dict>
 </plist>
