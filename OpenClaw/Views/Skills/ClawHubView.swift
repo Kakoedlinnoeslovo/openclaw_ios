@@ -27,7 +27,6 @@ struct ClawHubView: View {
     @State private var credentialInputs: [String: String] = [:]
     @State private var isSavingCredentials = false
     @State private var credentialsSaved = false
-    @State private var showOAuthSetup = false
 
     var body: some View {
         NavigationStack {
@@ -66,13 +65,6 @@ struct ClawHubView: View {
             }
             .sheet(isPresented: $showAgentPicker) {
                 agentPickerSheet
-            }
-            .sheet(isPresented: $showOAuthSetup) {
-                NavigationStack {
-                    GoogleOAuthConfigView(isConfigured: false) {
-                        showOAuthSetup = false
-                    }
-                }
             }
             .overlay {
                 if installState == .installing || installState == .success || installState == .failed || installState == .needsSetup {
@@ -280,7 +272,7 @@ struct ClawHubView: View {
                     }
                 }
             } catch OAuthError.notConfigured {
-                showOAuthSetup = true
+                oauthService.lastError = OAuthService.connectionUnavailableInAppMessage
             } catch {
                 // Error is stored in oauthService.lastError
             }
@@ -654,7 +646,6 @@ struct ClawHubSkillDetailView: View {
     @State private var isSavingCredentials = false
     @State private var credentialsSaved = false
     @State private var installedAgentId: String?
-    @State private var showOAuthSetup = false
 
     var body: some View {
         NavigationStack {
@@ -680,13 +671,6 @@ struct ClawHubSkillDetailView: View {
             }
             .sheet(isPresented: $showAgentPicker) {
                 agentPickerSheet
-            }
-            .sheet(isPresented: $showOAuthSetup) {
-                NavigationStack {
-                    GoogleOAuthConfigView(isConfigured: false) {
-                        showOAuthSetup = false
-                    }
-                }
             }
             .alert("Installation Failed", isPresented: .constant(installError != nil)) {
                 Button("OK") { installError = nil }
@@ -983,7 +967,7 @@ struct ClawHubSkillDetailView: View {
                     oauthConnected = true
                 }
             } catch OAuthError.notConfigured {
-                showOAuthSetup = true
+                oauthService.lastError = OAuthService.connectionUnavailableInAppMessage
             } catch {
                 // Error is stored in oauthService.lastError
             }

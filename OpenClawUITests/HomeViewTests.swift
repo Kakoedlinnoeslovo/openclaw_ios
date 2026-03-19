@@ -58,7 +58,7 @@ final class HomeViewTests: OpenClawUITestBase {
         }
         proBanner.tap()
 
-        let paywallHeadline = app.staticTexts["Get Full Access"]
+        let paywallHeadline = app.descendants(matching: .any)["paywall_headline"]
         XCTAssertTrue(waitForElement(paywallHeadline, timeout: 5),
                       "Pro banner should open paywall")
     }

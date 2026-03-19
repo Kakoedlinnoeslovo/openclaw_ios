@@ -54,6 +54,10 @@ __pycache__/
 *.pyc
 *.pyo
 
+# --- Local / agent tooling ---
+.claude/
+.derivedData/
+
 # --- IDE ---
 .idea/
 .cursor/

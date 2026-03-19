@@ -11,7 +11,26 @@ final class AuthService {
 
     private init() {
         loadCachedUser()
+        #if DEBUG
+        applyUITestBootstrapIfNeeded()
+        #endif
     }
+
+    #if DEBUG
+    private func applyUITestBootstrapIfNeeded() {
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
+        OnboardingFunnel.isComplete = true
+        UserDefaults.standard.set(true, forKey: "seen_trial_paywall")
+        currentUser = User(
+            id: "00000000-0000-0000-0000-000000000001",
+            email: "uitest@openclaw.test",
+            displayName: "UI Test",
+            avatarURL: nil,
+            tier: .free,
+            createdAt: Date()
+        )
+    }
+    #endif
 
     func signUp(email: String, password: String, displayName: String) async throws {
         isLoading = true
@@ -50,7 +69,7 @@ final class AuthService {
         cacheUser(response.user)
     }
 
-    func signInWithApple(credential: ASAuthorizationAppleIDCredential) async throws {
+    func signInWithApple(credential: ASAuthorizationAppleIDCredential, preferredDisplayName: String? = nil) async throws {
         isLoading = true
         defer { isLoading = false }
 
@@ -64,15 +83,23 @@ final class AuthService {
             let fullName: String?
         }
 
-        let fullName = [credential.fullName?.givenName, credential.fullName?.familyName]
+        let fromApple = [credential.fullName?.givenName, credential.fullName?.familyName]
             .compactMap { $0 }
             .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let trimmedPreferred = preferredDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let mergedName: String? = {
+            if !fromApple.isEmpty { return fromApple }
+            if !trimmedPreferred.isEmpty { return trimmedPreferred }
+            return nil
+        }()
 
         let response: AuthResponse = try await APIClient.shared.post(
             "/auth/apple",
             body: AppleSignInBody(
                 identityToken: identityToken,
-                fullName: fullName.isEmpty ? nil : fullName
+                fullName: mergedName
             )
         )
         saveTokens(response.tokens)
@@ -85,6 +112,14 @@ final class AuthService {
         Keychain.deleteValue(forKey: AppConstants.accessTokenKey)
         Keychain.deleteValue(forKey: AppConstants.refreshTokenKey)
         UserDefaults.standard.removeObject(forKey: "cached_user")
+    }
+
+    func deleteAccount() async throws {
+        isLoading = true
+        defer { isLoading = false }
+        try await APIClient.shared.delete("/auth/account")
+        OnboardingFunnel.resetForNewAccount()
+        signOut()
     }
 
     func refreshToken() async throws {

@@ -15,9 +15,8 @@ final class SubscriptionService {
     private var updateListenerTask: Task<Void, Error>?
 
     private let productIDs = [
-        AppConstants.Subscription.proMonthlyID,
+        AppConstants.Subscription.proWeeklyID,
         AppConstants.Subscription.proYearlyID,
-        AppConstants.Subscription.teamMonthlyID
     ]
 
     private init() {
@@ -66,10 +65,8 @@ final class SubscriptionService {
 
         purchasedProductIDs = newPurchased
 
-        if newPurchased.contains(AppConstants.Subscription.teamMonthlyID) {
-            currentTier = .team
-        } else if newPurchased.contains(AppConstants.Subscription.proMonthlyID) ||
-                  newPurchased.contains(AppConstants.Subscription.proYearlyID) {
+        if newPurchased.contains(AppConstants.Subscription.proWeeklyID) ||
+            newPurchased.contains(AppConstants.Subscription.proYearlyID) {
             currentTier = .pro
         } else {
             currentTier = .free

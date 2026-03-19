@@ -82,7 +82,6 @@ struct AgentCardView: View {
             }
         }
         .padding(14)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .homeSettingsCard(cornerRadius: 16, interactive: true)
     }
 }

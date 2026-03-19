@@ -15,6 +15,9 @@ final class SettingsViewTests: OpenClawUITestBase {
         let restoreRow = app.staticTexts["Restore Purchases"]
         XCTAssertTrue(restoreRow.exists, "Restore Purchases row should exist")
 
+        let supportRow = app.staticTexts["Help & Support"]
+        XCTAssertTrue(supportRow.exists, "Help & Support row should exist")
+
         let signOutButton = app.buttons.matching(
             NSPredicate(format: "label == 'Sign Out'")
         )
@@ -32,7 +35,7 @@ final class SettingsViewTests: OpenClawUITestBase {
 
         upgradeRow.tap()
 
-        let paywallHeadline = app.staticTexts["Get Full Access"]
+        let paywallHeadline = app.descendants(matching: .any)["paywall_headline"]
         XCTAssertTrue(waitForElement(paywallHeadline, timeout: 5),
                       "Tapping Upgrade to Pro should open paywall")
     }

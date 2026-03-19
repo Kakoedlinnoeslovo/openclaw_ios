@@ -5,7 +5,7 @@ final class PaywallTests: OpenClawUITestBase {
     func testPaywallElementsExist() {
         navigateToPaywall()
 
-        let headline = app.staticTexts["Get Full Access"]
+        let headline = app.descendants(matching: .any)["paywall_headline"]
         XCTAssertTrue(waitForElement(headline, timeout: 10), "Paywall headline should exist")
 
         let trialToggle = app.switches["paywall_trial_toggle"]
@@ -14,11 +14,13 @@ final class PaywallTests: OpenClawUITestBase {
         let continueButton = app.buttons["paywall_continue"]
         XCTAssertTrue(continueButton.exists, "Continue button should exist")
 
-        let footer = app.otherElements["paywall_footer"]
-        if footer.exists {
-            XCTAssertTrue(app.buttons["Restore"].exists, "Restore button should exist")
-            XCTAssertTrue(app.buttons["Privacy"].exists, "Privacy button should exist")
-        }
+        let restore = app.buttons["paywall_restore"]
+        XCTAssertTrue(restore.exists, "Restore button should exist")
+
+        XCTAssertTrue(app.descendants(matching: .any)["paywall_footer"].waitForExistence(timeout: 3) ||
+            app.buttons["Terms"].exists ||
+            app.staticTexts["Terms"].exists,
+            "Footer or Terms link should exist")
     }
 
     func testFreeTrialToggle() {
@@ -46,12 +48,18 @@ final class PaywallTests: OpenClawUITestBase {
         }
         dismiss.tap()
 
-        XCTAssertTrue(waitForElement(app.staticTexts["Get Full Access"]) == false || true,
-                      "Paywall should dismiss")
+        sleep(1)
+        let headline = app.descendants(matching: .any)["paywall_headline"]
+        XCTAssertFalse(headline.exists, "Paywall should dismiss")
     }
 
     private func navigateToPaywall() {
-        // This assumes app starts in onboarding or authenticated state
-        // In a test environment you might need to sign in first
+        let homeSettings = app.buttons["home_settings"]
+        guard homeSettings.waitForExistence(timeout: 8) else { return }
+        homeSettings.tap()
+
+        let upgrade = app.staticTexts["Upgrade to Pro"]
+        guard upgrade.waitForExistence(timeout: 5) else { return }
+        upgrade.tap()
     }
 }

@@ -38,28 +38,28 @@ class AppTheme {
     var accent: Color {
         switch style {
         case .soft: Color(red: 0.85, green: 0.42, blue: 0.52)
-        case .bold: Color(red: 0.30, green: 0.45, blue: 1.0)
+        case .bold: Color(red: 0.0, green: 0.76, blue: 0.98)
         }
     }
 
     var accentGradient: [Color] {
         switch style {
         case .soft: [Color(red: 0.90, green: 0.40, blue: 0.55), Color(red: 0.95, green: 0.60, blue: 0.50)]
-        case .bold: [Color(red: 0.30, green: 0.45, blue: 1.0), Color(red: 0.50, green: 0.30, blue: 0.95)]
+        case .bold: [Color(red: 0.0, green: 0.82, blue: 1.0), Color(red: 0.08, green: 0.42, blue: 0.92)]
         }
     }
 
     var secondaryAccent: Color {
         switch style {
         case .soft: Color(red: 0.95, green: 0.60, blue: 0.50)
-        case .bold: Color(red: 0.50, green: 0.30, blue: 0.95)
+        case .bold: Color(red: 0.05, green: 0.35, blue: 0.88)
         }
     }
 
     var subtleAccentBackground: Color {
         switch style {
         case .soft: Color(red: 0.96, green: 0.91, blue: 0.90)
-        case .bold: Color(red: 0.30, green: 0.45, blue: 1.0).opacity(0.08)
+        case .bold: Color(red: 0.0, green: 0.76, blue: 0.98).opacity(0.08)
         }
     }
 
@@ -70,7 +70,7 @@ class AppTheme {
     var heroGradient: [Color] {
         switch style {
         case .soft: [Color(red: 0.90, green: 0.40, blue: 0.55), Color(red: 0.80, green: 0.35, blue: 0.70)]
-        case .bold: [Color(red: 0.25, green: 0.50, blue: 1.0), Color(red: 0.45, green: 0.20, blue: 1.0)]
+        case .bold: [Color(red: 0.0, green: 0.84, blue: 1.0), Color(red: 0.05, green: 0.48, blue: 0.95)]
         }
     }
 

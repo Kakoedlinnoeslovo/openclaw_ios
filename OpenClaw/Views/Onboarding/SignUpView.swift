@@ -202,12 +202,16 @@ struct SignUpView: View {
 
     private func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
         switch result {
-        case .success(let auth):
-            guard let credential = auth.credential as? ASAuthorizationAppleIDCredential else { return }
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else { return }
             Task {
                 do {
                     errorMessage = nil
-                    try await AuthService.shared.signInWithApple(credential: credential)
+                    let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    try await self.auth.signInWithApple(
+                        credential: credential,
+                        preferredDisplayName: trimmed.isEmpty ? nil : trimmed
+                    )
                 } catch let error as APIError {
                     errorMessage = error.errorDescription
                 } catch {

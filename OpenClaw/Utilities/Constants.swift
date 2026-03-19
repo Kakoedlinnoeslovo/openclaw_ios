@@ -5,18 +5,24 @@ enum AppConstants {
     static let wsBaseURL = "wss://64.23.222.65.nip.io/ws"
 
     static let appStoreID = "6743122046"
-    static let keychainService = "com.openclaw.app"
+    static let keychainService = "im.openclaw.app"
     static let accessTokenKey = "access_token"
     static let refreshTokenKey = "refresh_token"
 
+    /// App Store Connect: auto-renewable weekly + yearly in one subscription group; 3-day intro on weekly if desired. Prices: weekly $6.99, yearly $69.99.
     enum Subscription {
-        static let proMonthlyID = "com.openclaw.pro.monthly"
+        static let proWeeklyID = "com.openclaw.pro.weekly"
         static let proYearlyID = "com.openclaw.pro.yearly"
-        static let teamMonthlyID = "com.openclaw.team.monthly"
+    }
+
+    enum Legal {
+        static let termsURL = URL(string: "https://kakoedlinnoeslovo.github.io/openclaw_ios/terms.html")!
+        static let privacyURL = URL(string: "https://kakoedlinnoeslovo.github.io/openclaw_ios/privacy.html")!
+        static let supportURL = URL(string: "https://kakoedlinnoeslovo.github.io/openclaw_ios/support.html")!
     }
 
     enum Features {
-        static let signInWithAppleEnabled = false
+        static let signInWithAppleEnabled = true
     }
 
     enum Limits {

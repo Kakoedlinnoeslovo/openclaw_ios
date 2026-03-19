@@ -593,6 +593,18 @@ app.post('/auth/refresh', authLimiter, async (req, res) => {
   }
 });
 
+app.delete('/auth/account', authenticate, async (req, res) => {
+  try {
+    const userId = req.userId;
+    await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
+    await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+    res.json({});
+  } catch (err) {
+    console.error('delete account:', err);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 // ──────────────────────────────────────────────
 // Agent routes (with OpenClaw provisioning)
 // ──────────────────────────────────────────────

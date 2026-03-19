@@ -35,13 +35,13 @@ enum QuickAction: String, CaseIterable, Identifiable {
     func color(accent: Color) -> Color {
         switch self {
         case .chat: accent
-        case .create: .purple
-        case .research: .indigo
-        case .email: .orange
-        case .write: .pink
-        case .web: .cyan
-        case .vision: .teal
-        case .voice: Color(red: 0.45, green: 0.20, blue: 0.95)
+        case .create: Color(red: 0.20, green: 0.55, blue: 0.98)
+        case .research: Color(red: 0.08, green: 0.40, blue: 0.92)
+        case .email: Color(red: 0.0, green: 0.70, blue: 1.0)
+        case .write: Color(red: 0.12, green: 0.48, blue: 0.96)
+        case .web: Color(red: 0.0, green: 0.62, blue: 0.94)
+        case .vision: Color(red: 0.06, green: 0.42, blue: 0.88)
+        case .voice: Color(red: 0.22, green: 0.50, blue: 0.99)
         }
     }
 

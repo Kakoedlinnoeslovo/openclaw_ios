@@ -4,6 +4,7 @@ struct HomeView: View {
     @Environment(AuthService.self) private var auth
     @Environment(SubscriptionService.self) private var subscription
     @Environment(AppTheme.self) private var theme
+    @AppStorage("onboarding.preferred_name") private var preferredName = ""
     @State private var agentService = AgentService.shared
     @State private var showCreateAgent = false
     @State private var selectedAgent: Agent?
@@ -12,10 +13,6 @@ struct HomeView: View {
     @State private var activeQuickAction: QuickAction?
     @State private var showSettings = false
     @State private var showVoiceMode = false
-    @State private var googleStatus: GlobalOAuthStatus?
-    @State private var isConnectingGoogle = false
-    @State private var googleConnectError: String?
-    @State private var showOAuthSetup = false
 
     private let topActions: [QuickAction] = [.chat, .write, .research, .vision]
     private let featuredTools: [QuickAction] = [.web, .email, .voice]
@@ -25,16 +22,13 @@ struct HomeView: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 24) {
                     headerSection
-                    if showGoogleCard {
-                        googleConnectionCard
-                    }
                     quickActionCards
                     featuredToolsList
                     agentsSection
                 }
                 .padding(.bottom, 100)
             }
-            .background(Color(.systemGroupedBackground))
+            .homeSettingsScreenBackground(theme: theme)
             .sheet(isPresented: $showCreateAgent) {
                 AgentCreationView(onCreated: { agent in
                     quickChatState = QuickChatState(agent: agent, initialMessage: nil)
@@ -86,29 +80,11 @@ struct HomeView: View {
                     VoiceModeView(agent: agent)
                 }
             }
-            .sheet(isPresented: $showOAuthSetup) {
-                NavigationStack {
-                    GoogleOAuthConfigView(isConfigured: false) {
-                        showOAuthSetup = false
-                        await refreshGoogleStatus()
-                    }
-                }
-            }
-            .alert("Connection Failed", isPresented: Binding(
-                get: { googleConnectError != nil },
-                set: { if !$0 { googleConnectError = nil } }
-            )) {
-                Button("OK") { googleConnectError = nil }
-            } message: {
-                Text(googleConnectError ?? "")
-            }
             .refreshable {
                 try? await agentService.fetchAgents()
-                await refreshGoogleStatus()
             }
             .task {
                 try? await agentService.fetchAgents()
-                await refreshGoogleStatus()
             }
         }
     }
@@ -148,13 +124,20 @@ struct HomeView: View {
                         .font(.system(size: 17))
                         .foregroundStyle(.secondary)
                         .frame(width: 36, height: 36)
-                        .background(Color(.tertiarySystemGroupedBackground))
-                        .clipShape(Circle())
+                        .homeSettingsCard(cornerRadius: 18, interactive: true)
                 }
                 .accessibilityIdentifier("home_settings")
             }
             .padding(.horizontal, 20)
             .padding(.top, 12)
+
+            if !preferredName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Hey, \(preferredName.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+            }
 
             Button {
                 handleQuickAction(.chat)
@@ -176,10 +159,9 @@ struct HomeView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .homeSettingsCard(cornerRadius: 16, interactive: true)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(theme.accent.opacity(0.12), lineWidth: 1)
                 )
             }
@@ -237,18 +219,10 @@ struct HomeView: View {
                     .clipShape(Capsule())
             }
             .padding(14)
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .homeSettingsCard(cornerRadius: 16, interactive: true)
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(
-                        LinearGradient(
-                            colors: [Color.yellow.opacity(0.3), Color.orange.opacity(0.15)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(theme.accent.opacity(0.35), lineWidth: 1)
             )
         }
         .padding(.horizontal, 20)
@@ -258,15 +232,17 @@ struct HomeView: View {
     // MARK: - Quick Action Cards (2-column)
 
     private var quickActionCards: some View {
-        LazyVGrid(
-            columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
-            spacing: 12
-        ) {
-            ForEach(topActions) { action in
-                QuickActionCard(action: action, accentColor: theme.accent) {
-                    handleQuickAction(action)
+        HomeQuickActionsGlassShell(spacing: 12) {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                spacing: 12
+            ) {
+                ForEach(topActions) { action in
+                    QuickActionCard(action: action, accentColor: theme.accent) {
+                        handleQuickAction(action)
+                    }
+                    .accessibilityIdentifier("quick_action_\(action.rawValue.lowercased())")
                 }
-                .accessibilityIdentifier("quick_action_\(action.rawValue.lowercased())")
             }
         }
         .padding(.horizontal, 20)
@@ -305,7 +281,7 @@ struct HomeView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(action.headerTitle)
                                     .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.primary)
+                                    .foregroundStyle(theme.accent)
                                 Text(action.headerSubtitle)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -326,8 +302,7 @@ struct HomeView: View {
                     }
                 }
             }
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .homeSettingsCard(cornerRadius: 16)
             .padding(.horizontal, 20)
         }
     }
@@ -410,127 +385,14 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 32)
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .homeSettingsCard(cornerRadius: 16, interactive: true)
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(theme.accent.opacity(0.2), style: StrokeStyle(lineWidth: 1.5, dash: [8, 5]))
             )
         }
         .padding(.horizontal, 20)
         .accessibilityIdentifier("home_empty_agent")
-    }
-
-    // MARK: - Google Connection
-
-    private var showGoogleCard: Bool {
-        OAuthService.hasEligibleSkills(provider: .google, agents: agentService.agents)
-    }
-
-    private var isGoogleConnected: Bool {
-        googleStatus?.connected == true
-    }
-
-    private var googleConnectionCard: some View {
-        Button {
-            guard !isGoogleConnected, !isConnectingGoogle else { return }
-            Task { await connectGoogle() }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "envelope.fill")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(
-                        LinearGradient(
-                            colors: [Color(red: 0.26, green: 0.52, blue: 0.96), Color(red: 0.18, green: 0.42, blue: 0.90)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 11))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Connect Google")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Text("Gmail, Calendar & Drive")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                if isConnectingGoogle {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if isGoogleConnected {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 13))
-                        Text("Connected")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .foregroundStyle(.green)
-                } else {
-                    Text("Connect")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            LinearGradient(
-                                colors: [Color(red: 0.26, green: 0.52, blue: 0.96), Color(red: 0.18, green: 0.42, blue: 0.90)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .clipShape(Capsule())
-                }
-            }
-            .padding(14)
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(
-                        isGoogleConnected
-                            ? Color.green.opacity(0.2)
-                            : Color(red: 0.26, green: 0.52, blue: 0.96).opacity(0.15),
-                        lineWidth: 1
-                    )
-            )
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 20)
-        .accessibilityIdentifier("home_google_connect")
-    }
-
-    private func connectGoogle() async {
-        isConnectingGoogle = true
-        defer { isConnectingGoogle = false }
-
-        do {
-            _ = try await OAuthService.shared.connectAll(
-                provider: .google,
-                agents: agentService.agents
-            )
-            await refreshGoogleStatus()
-        } catch OAuthError.notConfigured {
-            showOAuthSetup = true
-        } catch {
-            if (error as? OAuthError) != nil {
-                googleConnectError = error.localizedDescription
-            }
-        }
-    }
-
-    private func refreshGoogleStatus() async {
-        guard OAuthService.hasEligibleSkills(provider: .google, agents: agentService.agents) else {
-            googleStatus = nil
-            return
-        }
-        googleStatus = try? await OAuthService.shared.checkGlobalStatus(provider: .google)
     }
 
     // MARK: - Actions
@@ -605,8 +467,7 @@ private struct QuickActionCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .homeSettingsCard(cornerRadius: 16, interactive: true)
         }
         .buttonStyle(.plain)
     }

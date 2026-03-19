@@ -6,411 +6,493 @@ struct PaywallView: View {
     @Environment(SubscriptionService.self) private var subscription
     @Environment(AppTheme.self) private var theme
 
+    /// When true, shown inside onboarding; dismiss is not used and `onFunnelFinished` is required to enter the app.
+    var embeddedInFunnel: Bool = false
+    var onFunnelFinished: (() -> Void)?
+
     @State private var selectedProduct: Product?
     @State private var isPurchasing = false
     @State private var freeTrialEnabled = true
     @State private var errorMessage: String?
-    @State private var selectedFallbackPlan: String = "yearly"
     @State private var appeared = false
+    @State private var fallbackPlan: FallbackPlan = .weekly
+
+    private enum FallbackPlan: String {
+        case yearly, weekly
+    }
+
+    init(embeddedInFunnel: Bool = false, onFunnelFinished: (() -> Void)? = nil) {
+        self.embeddedInFunnel = embeddedInFunnel
+        self.onFunnelFinished = onFunnelFinished
+    }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
+            OnboardingSpiralBackground(focal: .center)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 24) {
+                VStack(spacing: 16) {
+                    Color.clear.frame(height: 52)
                     providerHub
-                        .padding(.top, 24)
-
                     headline
-
                     featureList
-
                     freeTrialToggle
-
                     planPicker
-
-                    continueButton
-
-                    footer
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 40)
+                .padding(.horizontal, 22)
+                .padding(.bottom, 12)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                paywallBottomBar
             }
 
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .frame(width: 30, height: 30)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Circle())
-            }
-            .padding(.trailing, 20)
-            .padding(.top, 16)
-            .accessibilityIdentifier("paywall_dismiss")
+            topBar
+                .zIndex(1)
+                .allowsHitTesting(true)
         }
         .preferredColorScheme(.dark)
         .onAppear {
             appeared = true
-            if selectedProduct == nil {
-                selectedProduct = subscription.products.first(where: {
-                    $0.id == AppConstants.Subscription.proYearlyID
-                }) ?? subscription.products.first
-            }
+            syncSelectionWithTrialToggle()
+        }
+        .onChange(of: freeTrialEnabled) { _, _ in
+            syncSelectionWithTrialToggle()
+        }
+        .onChange(of: subscription.products.count) { _, _ in
+            syncSelectionWithTrialToggle()
         }
     }
 
-    // MARK: - Provider Hub
+    // MARK: - Top bar
+
+    /// Pinned above home indicator so Continue is always visible without scrolling.
+    private var paywallBottomBar: some View {
+        VStack(spacing: 10) {
+            continueButton
+            footerLinks
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
+        .frame(maxWidth: .infinity)
+        .background {
+            Color.black
+                .ignoresSafeArea(edges: .bottom)
+        }
+    }
+
+    private var topBar: some View {
+        HStack {
+            Button {
+                completeFunnelIfNeeded()
+                if !embeddedInFunnel { dismiss() }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+                    .background(OnboardingPalette.skipPill)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("paywall_dismiss")
+
+            Spacer()
+
+            Button {
+                Task { await subscription.restorePurchases() }
+            } label: {
+                Text("Restore")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(OnboardingPalette.skipPill)
+                    .clipShape(Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("paywall_restore")
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 8)
+    }
+
+    // MARK: - Provider hub
 
     private var providerHub: some View {
         ZStack {
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [theme.accent.opacity(0.20), theme.accent.opacity(0.05), .clear],
-                        center: .center,
-                        startRadius: 20,
-                        endRadius: 140
-                    )
-                )
-                .frame(width: 280, height: 280)
+            EllipticalNebulaGlow()
+                .frame(height: 168)
+                .offset(y: -14)
 
-            Circle()
-                .stroke(theme.accent.opacity(0.08), lineWidth: 1)
-                .frame(width: 160, height: 160)
-
-            Circle()
-                .stroke(theme.accent.opacity(0.05), lineWidth: 1)
-                .frame(width: 240, height: 240)
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 22)
-                    .fill(
-                        LinearGradient(
-                            colors: theme.heroGradient,
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+            TimelineView(.animation(minimumInterval: 1 / 24, paused: false)) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                ZStack {
+                    Circle()
+                        .fill(Color.black)
+                        .frame(width: 64, height: 64)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(0.15), lineWidth: 1)
                         )
-                    )
-                    .frame(width: 68, height: 68)
-                    .shadow(color: theme.accent.opacity(0.4), radius: 20, y: 4)
 
-                Image(systemName: "cpu.fill")
-                    .font(.system(size: 30, weight: .medium))
-                    .foregroundStyle(.white)
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 26, weight: .medium))
+                        .foregroundStyle(.white)
+
+                    paywallChip("Veo 3", "star.fill", angle: -58, radius: 92, time: t)
+                    paywallChip("Perplexity", "book.closed.fill", angle: -18, radius: 100, time: t)
+                    paywallChip("ChatGPT", "bubble.left.and.bubble.right.fill", angle: 22, radius: 96, time: t)
+                    paywallChip("Claude", "sun.max.fill", angle: 58, radius: 92, time: t)
+                    paywallChip("Grok 4", "location.north.circle.fill", angle: 118, radius: 92, time: t)
+                    paywallChip("DeepSeek", "fish.fill", angle: 162, radius: 98, time: t)
+                }
+                .frame(height: 200)
             }
-            .scaleEffect(appeared ? 1 : 0.7)
-            .animation(.spring(response: 0.5, dampingFraction: 0.7).delay(0.1), value: appeared)
-
-            providerChip("sparkles", "GPT-5", angle: -60, radius: 100)
-            providerChip("magnifyingglass", "Perplexity", angle: -20, radius: 110)
-            providerChip("brain.head.profile", "ChatGPT", angle: 20, radius: 105)
-            providerChip("wand.and.stars", "Claude", angle: 60, radius: 100)
-            providerChip("bolt.fill", "Grok", angle: 120, radius: 100)
-            providerChip("text.magnifyingglass", "DeepSeek", angle: 160, radius: 110)
-            providerChip("function", "√x", angle: 200, radius: 105)
-            providerChip("text.book.closed", "Aa", angle: 240, radius: 100)
         }
-        .frame(height: 260)
-        .clipped()
+        .opacity(appeared ? 1 : 0.85)
+        .scaleEffect(appeared ? 1 : 0.96)
+        .animation(.spring(response: 0.5, dampingFraction: 0.78), value: appeared)
     }
 
-    private func providerChip(_ icon: String, _ name: String, angle: Double, radius: CGFloat) -> some View {
+    private func paywallChip(_ title: String, _ icon: String, angle: Double, radius: CGFloat, time: TimeInterval) -> some View {
         let rad = angle * .pi / 180
+        let bob = sin(time * 1.25 + angle * 0.03) * 3.2
         let x = cos(rad) * radius
-        let y = sin(rad) * radius
-
-        return ZStack {
-            Circle()
-                .fill(.ultraThinMaterial)
-                .frame(width: 46, height: 46)
-                .overlay(
-                    Circle()
-                        .stroke(.white.opacity(0.08), lineWidth: 0.5)
-                )
-
+        let y = sin(rad) * radius + bob
+        return HStack(spacing: 4) {
             Image(systemName: icon)
-                .font(.system(size: 16))
-                .foregroundStyle(theme.accent)
+                .font(.system(size: 11, weight: .semibold))
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
         }
+        .foregroundStyle(.black)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.white)
+        .clipShape(Capsule())
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
         .offset(x: x, y: y)
-        .opacity(appeared ? 1 : 0)
-        .animation(.easeOut(duration: 0.4).delay(0.2), value: appeared)
     }
 
     // MARK: - Headline
 
     private var headline: some View {
-        VStack(spacing: 6) {
-            Text("Unlock New Possibilities")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.white.opacity(0.6))
-            Text("OpenClaw PRO")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: theme.accentGradient,
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
+        VStack(spacing: 10) {
+            Text("GPT-5.4, Grok 4, Veo 3.1")
+                .font(OnboardingTypography.paywallHeadline)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("paywall_headline")
         }
     }
 
-    // MARK: - Feature List
+    // MARK: - Features
 
     private var featureList: some View {
-        VStack(spacing: 0) {
-            featureRow(icon: "sparkles.rectangle.stack", text: "Image Generation")
-            featureRow(icon: "infinity", text: "Unlimited Messages")
-            featureRow(icon: "keyboard", text: "Smart AI Keyboard")
-            featureRow(icon: "star", text: "Best Value")
+        VStack(alignment: .leading, spacing: 10) {
+            paywallFeatureRow(icon: "sparkles.rectangle.stack", title: "Create images and videos")
+            paywallFeatureRow(icon: "safari.fill", title: "Search the web with AI")
+            paywallFeatureRow(icon: "waveform", title: "Talk naturally to AI")
         }
         .padding(.vertical, 4)
-        .background(.white.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
-    private func featureRow(icon: String, text: String) -> some View {
-        HStack(spacing: 14) {
+    private func paywallFeatureRow(icon: String, title: String) -> some View {
+        HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(theme.accent)
-                .frame(width: 32, height: 32)
-                .background(theme.accent.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-
-            Text(text)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(.white)
-
+                .frame(width: 28, height: 28)
+            Text(title)
+                .font(OnboardingTypography.paywallFeature)
+                .foregroundStyle(.white)
             Spacer()
-
-            Image(systemName: "checkmark")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(theme.accent)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
     }
 
-    // MARK: - Free Trial Toggle
+    // MARK: - Trial toggle
 
     private var freeTrialToggle: some View {
-        HStack {
-            Text("Enable Free Trial")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.white)
-
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Free trial")
+                    .font(OnboardingTypography.paywallFeature)
+                    .foregroundStyle(.white)
+                Text("3-day free trial")
+                    .font(OnboardingTypography.planMeta)
+                    .foregroundStyle(OnboardingPalette.muted)
+            }
             Spacer()
-
             Toggle("", isOn: $freeTrialEnabled)
                 .labelsHidden()
-                .tint(theme.accent)
+                .tint(OnboardingPalette.iosBlue)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(.white.opacity(0.08), lineWidth: 0.5)
-        )
+        .background(OnboardingPalette.chipFill)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .accessibilityIdentifier("paywall_trial_toggle")
     }
 
-    // MARK: - Plan Picker
+    // MARK: - Plans
 
     private var planPicker: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             if subscription.products.isEmpty {
-                Button { selectedFallbackPlan = "yearly" } label: {
-                    yearlyPlanCard(
-                        title: "Yearly Plan",
-                        subtitle: "12 mo · $49.99",
-                        weeklyPrice: "$4.17/mo",
-                        originalPrice: "$99.99/yr",
-                        saveBadge: "BEST VALUE",
-                        isSelected: selectedFallbackPlan == "yearly"
-                    )
-                }
-                .buttonStyle(.plain)
-
-                Button { selectedFallbackPlan = "monthly" } label: {
-                    monthlyPlanCard(
-                        title: "Monthly Plan",
-                        monthlyPrice: "$9.99/mo",
-                        originalPrice: "$19.99/mo",
-                        isSelected: selectedFallbackPlan == "monthly"
-                    )
-                }
-                .buttonStyle(.plain)
+                fallbackYearlyCard
+                fallbackWeeklyCard
             } else {
-                ForEach(subscription.products.sorted(by: { $0.price > $1.price }), id: \.id) { product in
-                    let isYearly = product.id.contains("yearly")
-                    let isSelected = selectedProduct?.id == product.id
-
-                    Button { selectedProduct = product } label: {
-                        if isYearly {
-                            yearlyPlanCard(
-                                title: "Yearly Plan",
-                                subtitle: "12 mo · \(product.displayPrice)",
-                                weeklyPrice: monthlyPrice(for: product),
-                                originalPrice: originalYearlyPrice(for: product),
-                                saveBadge: "BEST VALUE",
-                                isSelected: isSelected
-                            )
-                        } else {
-                            monthlyPlanCard(
-                                title: "Monthly Plan",
-                                monthlyPrice: product.displayPrice + "/mo",
-                                originalPrice: originalMonthlyPrice(for: product),
-                                isSelected: isSelected
-                            )
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier(isYearly ? "paywall_yearly" : "paywall_monthly")
-                }
+                yearlyProductCard
+                weeklyProductCard
             }
         }
     }
 
-    private func yearlyPlanCard(title: String, subtitle: String, weeklyPrice: String, originalPrice: String, saveBadge: String, isSelected: Bool) -> some View {
-        ZStack(alignment: .top) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(subtitle)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.white.opacity(0.5))
+    private var yearlyProduct: Product? {
+        subscription.products.first { $0.id == AppConstants.Subscription.proYearlyID }
+    }
+
+    private var weeklyProduct: Product? {
+        subscription.products.first { $0.id == AppConstants.Subscription.proWeeklyID }
+    }
+
+    private func syncSelectionWithTrialToggle() {
+        if freeTrialEnabled {
+            selectedProduct = weeklyProduct
+            fallbackPlan = .weekly
+        } else {
+            selectedProduct = yearlyProduct
+            fallbackPlan = .yearly
+        }
+    }
+
+    @ViewBuilder
+    private var yearlyProductCard: some View {
+        if let p = yearlyProduct {
+            planCardButton(
+                product: p,
+                isYearly: true,
+                isSelected: selectedProduct?.id == p.id,
+                weeklyEquivalent: formatPerWeek(from: p.price, periodsPerYear: 52)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var weeklyProductCard: some View {
+        if let p = weeklyProduct {
+            planCardButton(
+                product: p,
+                isYearly: false,
+                isSelected: selectedProduct?.id == p.id,
+                weeklyEquivalent: nil
+            )
+        }
+    }
+
+    private func planCardButton(
+        product: Product,
+        isYearly: Bool,
+        isSelected: Bool,
+        weeklyEquivalent: String?
+    ) -> some View {
+        Button {
+            selectedProduct = product
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(isYearly ? "Yearly" : "Weekly")
+                            .font(OnboardingTypography.planTitle)
+                            .foregroundStyle(.white)
+                        if isYearly {
+                            Text("Only \(product.displayPrice)")
+                                .font(OnboardingTypography.planMeta)
+                                .foregroundStyle(OnboardingPalette.muted)
+                        } else {
+                            Text(freeTrialEnabled ? "3-day free trial" : "Cancel anytime")
+                                .font(OnboardingTypography.planMeta)
+                                .foregroundStyle(OnboardingPalette.muted)
+                        }
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        if let weeklyEquivalent {
+                            Text(weeklyEquivalent)
+                                .font(OnboardingTypography.planPrice)
+                                .foregroundStyle(.white)
+                            Text("per week")
+                                .font(OnboardingTypography.planUnit)
+                                .foregroundStyle(OnboardingPalette.muted)
+                        } else {
+                            Text(product.displayPrice)
+                                .font(OnboardingTypography.planPrice)
+                                .foregroundStyle(.white)
+                            Text("per week")
+                                .font(OnboardingTypography.planUnit)
+                                .foregroundStyle(OnboardingPalette.muted)
+                        }
+                    }
                 }
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(OnboardingPalette.chipFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(
+                            isSelected ? OnboardingPalette.iosBlue : Color.white.opacity(0.1),
+                            lineWidth: isSelected ? 2 : 1
+                        )
+                )
 
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(originalPrice)
-                        .font(.system(size: 12))
-                        .strikethrough()
-                        .foregroundStyle(.white.opacity(0.35))
-                    Text(weeklyPrice)
-                        .font(.system(size: 16, weight: .bold))
+                if isYearly {
+                    Text("Best offer")
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(OnboardingPalette.iosBlue)
+                        .clipShape(Capsule())
+                        .offset(x: -8, y: -10)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: isSelected)
+        .accessibilityIdentifier(isYearly ? "paywall_yearly" : "paywall_weekly")
+    }
+
+    private func formatPerWeek(from yearlyPrice: Decimal, periodsPerYear: Int) -> String {
+        let per = yearlyPrice / Decimal(periodsPerYear)
+        let d = NSDecimalNumber(decimal: per).doubleValue
+        return String(format: "$%.2f", d)
+    }
+
+    private var fallbackYearlyCard: some View {
+        Button {
+            fallbackPlan = .yearly
+            selectedProduct = nil
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Yearly")
+                            .font(OnboardingTypography.planTitle)
+                            .foregroundStyle(.white)
+                        Text("Only $69.99")
+                            .font(OnboardingTypography.planMeta)
+                            .foregroundStyle(OnboardingPalette.muted)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("$1.35")
+                            .font(OnboardingTypography.planPrice)
+                            .foregroundStyle(.white)
+                        Text("per week")
+                            .font(OnboardingTypography.planUnit)
+                            .foregroundStyle(OnboardingPalette.muted)
+                    }
+                }
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(OnboardingPalette.chipFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(
+                            fallbackPlan == .yearly ? OnboardingPalette.iosBlue : Color.white.opacity(0.1),
+                            lineWidth: fallbackPlan == .yearly ? 2 : 1
+                        )
+                )
+                Text("Best offer")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(OnboardingPalette.iosBlue)
+                    .clipShape(Capsule())
+                    .offset(x: -8, y: -10)
+            }
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: fallbackPlan)
+        .accessibilityIdentifier("paywall_yearly")
+    }
+
+    private var fallbackWeeklyCard: some View {
+        Button {
+            fallbackPlan = .weekly
+            selectedProduct = nil
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Weekly")
+                        .font(OnboardingTypography.planTitle)
+                        .foregroundStyle(.white)
+                    Text(freeTrialEnabled ? "3-day free trial" : "Cancel anytime")
+                        .font(OnboardingTypography.planMeta)
+                        .foregroundStyle(OnboardingPalette.muted)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("$6.99")
+                        .font(OnboardingTypography.planPrice)
+                        .foregroundStyle(.white)
+                    Text("per week")
+                        .font(OnboardingTypography.planUnit)
+                        .foregroundStyle(OnboardingPalette.muted)
                 }
             }
             .padding(18)
-            .padding(.top, 6)
             .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(isSelected ? theme.accent.opacity(0.10) : .white.opacity(0.03))
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(OnboardingPalette.chipFill)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(
-                        isSelected
-                            ? AnyShapeStyle(LinearGradient(colors: theme.accentGradient, startPoint: .leading, endPoint: .trailing))
-                            : AnyShapeStyle(Color.white.opacity(0.10)),
-                        lineWidth: isSelected ? 2 : 1
+                        fallbackPlan == .weekly ? OnboardingPalette.iosBlue : Color.white.opacity(0.1),
+                        lineWidth: fallbackPlan == .weekly ? 2 : 1
                     )
             )
-
-            Text(saveBadge)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
-                .background(
-                    LinearGradient(colors: theme.accentGradient, startPoint: .leading, endPoint: .trailing)
-                )
-                .clipShape(Capsule())
-                .offset(y: -12)
         }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: fallbackPlan)
+        .accessibilityIdentifier("paywall_weekly")
     }
 
-    private func monthlyPlanCard(title: String, monthlyPrice: String, originalPrice: String, isSelected: Bool) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.white)
-
-            Spacer()
-
-            HStack(spacing: 8) {
-                Text(originalPrice)
-                    .font(.system(size: 13))
-                    .strikethrough()
-                    .foregroundStyle(.white.opacity(0.35))
-                Text(monthlyPrice)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-        }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(isSelected ? theme.accent.opacity(0.10) : .white.opacity(0.03))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(
-                    isSelected
-                        ? AnyShapeStyle(LinearGradient(colors: theme.accentGradient, startPoint: .leading, endPoint: .trailing))
-                        : AnyShapeStyle(Color.white.opacity(0.10)),
-                    lineWidth: isSelected ? 2 : 1
-                )
-        )
-    }
-
-    private func monthlyPrice(for product: Product) -> String {
-        let monthly = product.price / 12
-        return String(format: "$%.2f/mo", NSDecimalNumber(decimal: monthly).doubleValue)
-    }
-
-    private func originalYearlyPrice(for product: Product) -> String {
-        let original = product.price * 2
-        return String(format: "$%.2f/yr", NSDecimalNumber(decimal: original).doubleValue)
-    }
-
-    private func originalMonthlyPrice(for product: Product) -> String {
-        let original = product.price * 2
-        return String(format: "$%.2f/mo", NSDecimalNumber(decimal: original).doubleValue)
-    }
-
-    // MARK: - Continue Button
+    // MARK: - Continue
 
     private var continueButton: some View {
         VStack(spacing: 8) {
-            Button { purchase() } label: {
+            Button {
+                purchase()
+            } label: {
                 if isPurchasing {
                     ProgressView()
                         .tint(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 18)
                 } else {
-                    HStack(spacing: 8) {
-                        Text("Continue")
-                            .font(.system(size: 18, weight: .semibold))
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 14, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 18)
+                    Text("Continue")
+                        .font(OnboardingTypography.cta)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 18)
                 }
             }
-            .contentShape(Rectangle())
-            .background(
-                LinearGradient(
-                    colors: theme.heroGradient,
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .shadow(color: theme.accent.opacity(0.35), radius: 16, y: 6)
+            .background(OnboardingPalette.iosBlue)
+            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
             .disabled(isPurchasing)
             .accessibilityIdentifier("paywall_continue")
 
@@ -422,26 +504,31 @@ struct PaywallView: View {
         }
     }
 
-    // MARK: - Footer
-
-    private var footer: some View {
-        HStack(spacing: 24) {
-            Button("Restore") {
-                Task { await subscription.restorePurchases() }
-            }
-            Button("EULA") {}
-            Button("Privacy") {}
+    private var footerLinks: some View {
+        HStack(spacing: 8) {
+            Link("Terms", destination: AppConstants.Legal.termsURL)
+            Text("|").foregroundStyle(OnboardingPalette.muted.opacity(0.5))
+            Link("Privacy", destination: AppConstants.Legal.privacyURL)
         }
-        .font(.system(size: 12))
-        .foregroundStyle(.white.opacity(0.35))
+        .font(OnboardingTypography.caption)
+        .foregroundStyle(OnboardingPalette.muted)
+        .frame(maxWidth: .infinity)
         .accessibilityIdentifier("paywall_footer")
     }
 
-    // MARK: - Purchase
+    // MARK: - Actions
+
+    private func completeFunnelIfNeeded() {
+        onFunnelFinished?()
+    }
 
     private func purchase() {
+        if subscription.products.isEmpty {
+            errorMessage = "Subscriptions aren’t available yet. Check App Store Connect configuration."
+            return
+        }
         guard let product = selectedProduct else {
-            errorMessage = "Unable to load subscription. Check your connection and try again."
+            errorMessage = "Pick a plan to continue."
             return
         }
         isPurchasing = true
@@ -449,11 +536,55 @@ struct PaywallView: View {
         Task {
             do {
                 let success = try await subscription.purchase(product)
-                if success { dismiss() }
+                if success {
+                    completeFunnelIfNeeded()
+                    if !embeddedInFunnel { dismiss() }
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
             isPurchasing = false
+        }
+    }
+}
+
+// MARK: - Nebula background
+
+private struct EllipticalNebulaGlow: View {
+    var body: some View {
+        ZStack {
+            Ellipse()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.15, green: 0.92, blue: 0.88).opacity(0.42),
+                            Color(red: 0.2, green: 0.45, blue: 0.95).opacity(0.18),
+                            Color.clear,
+                        ],
+                        center: .center,
+                        startRadius: 16,
+                        endRadius: 150
+                    )
+                )
+                .frame(width: 300, height: 210)
+                .offset(x: -56, y: -8)
+                .blur(radius: 30)
+            Ellipse()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.38, green: 0.15, blue: 0.92).opacity(0.4),
+                            Color(red: 0.12, green: 0.08, blue: 0.35).opacity(0.12),
+                            Color.clear,
+                        ],
+                        center: .center,
+                        startRadius: 24,
+                        endRadius: 170
+                    )
+                )
+                .frame(width: 320, height: 200)
+                .offset(x: 58, y: 6)
+                .blur(radius: 34)
         }
     }
 }

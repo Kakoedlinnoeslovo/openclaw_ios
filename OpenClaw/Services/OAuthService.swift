@@ -57,20 +57,12 @@ struct GlobalOAuthStatus: Codable {
     let needsRefresh: Bool?
 }
 
-struct OAuthProviderConfig: Codable {
-    let configured: Bool
-    let hasClientId: Bool
-    let hasClientSecret: Bool
-}
-
-struct OAuthConfigResponse: Codable {
-    let providers: [String: OAuthProviderConfig]
-    let redirectBase: String
-}
-
 @Observable
 final class OAuthService {
     static let shared = OAuthService()
+
+    /// Shown when the server reports OAuth admin credentials are missing (no in-app setup flow).
+    static let connectionUnavailableInAppMessage = "Account connection isn’t available in the app right now."
 
     var isAuthenticating = false
     var lastError: String?
@@ -182,24 +174,6 @@ final class OAuthService {
         )
     }
 
-    // MARK: - OAuth Config (admin)
-
-    func fetchOAuthConfig() async throws -> OAuthConfigResponse {
-        try await APIClient.shared.get("/admin/oauth-config")
-    }
-
-    func saveOAuthConfig(provider: OAuthProvider, clientId: String, clientSecret: String) async throws {
-        struct SaveBody: Codable {
-            let provider: String
-            let clientId: String
-            let clientSecret: String
-        }
-        let _: SaveConfigResponse = try await APIClient.shared.post(
-            "/admin/oauth-config",
-            body: SaveBody(provider: provider.rawValue, clientId: clientId, clientSecret: clientSecret)
-        )
-    }
-
     static func firstEligibleSkill(provider: OAuthProvider, agents: [Agent]) -> (agentId: String, skillId: String)? {
         for agent in agents {
             for skill in agent.skills {
@@ -263,12 +237,6 @@ enum OAuthError: LocalizedError {
 private struct AuthURLResponse: Codable {
     let authUrl: String
     let state: String
-}
-
-private struct SaveConfigResponse: Codable {
-    let ok: Bool
-    let provider: String
-    let configured: Bool
 }
 
 final class OAuthPresentationContext: NSObject, ASWebAuthenticationPresentationContextProviding {
