@@ -22,7 +22,9 @@ struct AgentDetailView: View {
                 recentTasksSection
             }
             .padding()
+            .padding(.bottom, 100)
         }
+        .homeSettingsScreenBackground(theme: theme)
         .navigationTitle(agent.name)
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showSkillBrowser, onDismiss: syncAgent) {
@@ -91,37 +93,24 @@ struct AgentDetailView: View {
     }
 
     private var actionButtons: some View {
-        HStack(spacing: 12) {
-            Button {
-                showChat = true
-            } label: {
-                Label("Run Task", systemImage: "bolt.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(theme.accent)
+        HStack(spacing: 10) {
+            AgentDetailActionButton(
+                title: "Run Task",
+                icon: "bolt.fill",
+                style: .prominent(theme.accent)
+            ) { showChat = true }
 
-            Button {
-                showVoiceMode = true
-            } label: {
-                Label("Talk", systemImage: "mic.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(theme.secondaryAccent)
+            AgentDetailActionButton(
+                title: "Talk",
+                icon: "mic.fill",
+                style: .prominent(theme.secondaryAccent)
+            ) { showVoiceMode = true }
 
-            Button {
-                showSkillBrowser = true
-            } label: {
-                Label("Add Skill", systemImage: "puzzlepiece.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.vertical, 14)
-            }
-            .buttonStyle(.bordered)
+            AgentDetailActionButton(
+                title: "Add Skill",
+                icon: "puzzlepiece.fill",
+                style: .outlined(theme.accent)
+            ) { showSkillBrowser = true }
         }
     }
 
@@ -157,8 +146,10 @@ struct AgentDetailView: View {
                 .background(.quaternary.opacity(0.3))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
-                ForEach(agent.skills) { skill in
-                    installedSkillRow(skill)
+                VStack(spacing: 10) {
+                    ForEach(agent.skills) { skill in
+                        installedSkillRow(skill)
+                    }
                 }
             }
         }
@@ -183,18 +174,18 @@ struct AgentDetailView: View {
     }
 
     private func installedSkillRow(_ skill: Agent.InstalledSkill) -> some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: skill.icon)
-                .font(.body)
+                .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(skill.isEnabled ? theme.accent : .secondary)
-                .frame(width: 36, height: 36)
+                .frame(width: 40, height: 40)
                 .background((skill.isEnabled ? theme.accent : Color.secondary).opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(skill.name)
-                        .font(.subheadline.weight(.medium))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(skill.isEnabled ? .primary : .secondary)
 
                     if skill.source == "clawhub" {
@@ -208,59 +199,62 @@ struct AgentDetailView: View {
                     }
                 }
 
-                HStack(spacing: 6) {
+                HStack(alignment: .center, spacing: 6) {
                     Text("v\(skill.version)")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.tertiary)
 
                     if skillNeedsKeys(skill) {
                         if skillIsConfigured(skill) {
                             Label("Configured", systemImage: "checkmark.circle.fill")
-                                .font(.system(size: 9, weight: .medium))
+                                .font(.caption2.weight(.medium))
                                 .foregroundStyle(.green)
                         } else {
                             Label("Needs setup", systemImage: "key.fill")
-                                .font(.system(size: 9, weight: .medium))
+                                .font(.caption2.weight(.medium))
                                 .foregroundStyle(.orange)
                         }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer()
+            HStack(alignment: .center, spacing: 10) {
+                Button {
+                    configuringSkill = skill
+                } label: {
+                    Image(systemName: skillNeedsKeys(skill) && !skillIsConfigured(skill)
+                          ? "key.fill" : "gearshape.fill")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(skillNeedsKeys(skill) && !skillIsConfigured(skill) ? .orange : .secondary)
+                        .frame(width: 36, height: 36)
+                        .background(Color(.tertiarySystemFill))
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
 
-            Button {
-                configuringSkill = skill
-            } label: {
-                Image(systemName: skillNeedsKeys(skill) && !skillIsConfigured(skill)
-                      ? "key.fill" : "gearshape.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(skillNeedsKeys(skill) && !skillIsConfigured(skill) ? .orange : .secondary)
-                    .frame(width: 32, height: 32)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-
-            Toggle("", isOn: Binding(
-                get: { skill.isEnabled },
-                set: { newValue in
-                    Task {
-                        if let updated = try? await agentService.setSkillEnabled(
-                            agentId: agent.id,
-                            skillId: skill.skillId,
-                            enabled: newValue
-                        ) {
-                            agent = updated
+                Toggle("", isOn: Binding(
+                    get: { skill.isEnabled },
+                    set: { newValue in
+                        Task {
+                            if let updated = try? await agentService.setSkillEnabled(
+                                agentId: agent.id,
+                                skillId: skill.skillId,
+                                enabled: newValue
+                            ) {
+                                agent = updated
+                            }
                         }
                     }
-                }
-            ))
-            .labelsHidden()
-            .scaleEffect(0.8)
+                ))
+                .labelsHidden()
+            }
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.3))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .background(.quaternary.opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contextMenu {
             Button {
                 configuringSkill = skill
@@ -300,6 +294,82 @@ struct AgentDetailView: View {
             }
             .background(.quaternary.opacity(0.3))
             .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+}
+
+// MARK: - Agent detail action button (consistent vertical icon + title)
+
+private struct AgentDetailActionButton: View {
+    enum Style {
+        case prominent(Color)
+        case outlined(Color)
+    }
+
+    let title: String
+    let icon: String
+    let style: Style
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, minHeight: 76, alignment: .center)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(AgentDetailActionButtonChrome(style: style))
+    }
+}
+
+private struct AgentDetailActionButtonChrome: ViewModifier {
+    let style: AgentDetailActionButton.Style
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        switch style {
+        case .prominent(let tint):
+            content
+                .foregroundStyle(.white)
+                .background(
+                    LinearGradient(
+                        colors: [
+                            tint,
+                            tint.opacity(colorScheme == .dark ? 0.82 : 0.88),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(.white.opacity(colorScheme == .dark ? 0.12 : 0.2), lineWidth: 1)
+                )
+                .shadow(color: tint.opacity(0.28), radius: 8, y: 3)
+        case .outlined(let tint):
+            content
+                .foregroundStyle(tint)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(.secondarySystemGroupedBackground))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(tint.opacity(0.45), lineWidth: 1.25)
+                )
         }
     }
 }

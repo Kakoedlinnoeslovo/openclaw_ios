@@ -1,0 +1,35 @@
+{
+  "appName": "OpenClaw",
+  "falModel": "fal-ai/nano-banana-2/edit",
+  "nanoBanana": {
+    "aspectRatio": "9:16",
+    "resolution": "2K",
+    "outputFormat": "png",
+    "limitGenerations": true
+  },
+  "export": {
+    "iphone67Portrait": { "width": 1290, "height": 2796 }
+  },
+  "styleDefaults": {
+    "backgroundNote": "near-black (#050508) with a subtle grey plus-sign (+) grid that feels continuous for an App Store horizontal carousel",
+    "defaultAccentGradient": "cyan → electric blue → soft violet on accent words only"
+  },
+  "items": [
+    {
+      "input": "IMG_2321.png",
+      "headlineWhite": "Ask AI",
+      "headlineAccent": "Anything",
+      "accentGradient": "electric blue to violet with a soft glow",
+      "featureSummary": "Fast answers in a dark, focused chat experience.",
+      "carousel": { "index": 1, "total": 6 }
+    },
+    {
+      "input": "IMG_2322.png",
+      "headlineWhite": "Your workflow,",
+      "headlineAccent": "Amplified",
+      "accentGradient": "teal to mint",
+      "featureSummary": "Keep context and move tasks forward without leaving the thread.",
+      "carousel": { "index": 2, "total": 6 }
+    }
+  ]
+}

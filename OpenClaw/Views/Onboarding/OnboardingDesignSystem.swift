@@ -69,16 +69,49 @@ enum OnboardingPalette {
         )
     }
 
-    /// Spiral dashes: blend electric blue ↔ magenta by angle + radius; opacity scales with `pulse`
-    static func spiralDashColor(angle: Double, u: Double, pulse: Double, edgeFade: CGFloat) -> Color {
-        let t = max(0, min(1, 0.35 + u * 0.45 + 0.2 * sin(angle * 0.85)))
-        let blue = (Double(94 / 255), Double(154 / 255), 1.0)
-        let pink = (Double(192 / 255), Double(77 / 255), Double(249 / 255))
-        let r = blue.0 + (pink.0 - blue.0) * t
-        let g = blue.1 + (pink.1 - blue.1) * t
-        let b = blue.2 + (pink.2 - blue.2) * t
-        let baseOpacity = (0.09 + u * 0.26) * pulse * Double(edgeFade)
+    /// Spiral dashes: neon blue → purple → magenta; `time` drives twinkle for a “live” field
+    static func spiralDashColor(angle: Double, u: Double, pulse: Double, edgeFade: CGFloat, time: Double) -> Color {
+        let t = max(0, min(1, 0.28 + u * 0.5 + 0.22 * sin(angle * 0.9)))
+        let cyan = (0.0, 0.88, 1.0)
+        let purple = (0.45, 0.25, 0.98)
+        let magenta = (0.92, 0.22, 0.95)
+        let r: Double
+        let g: Double
+        let b: Double
+        if t < 0.5 {
+            let s = t * 2
+            r = cyan.0 + (purple.0 - cyan.0) * s
+            g = cyan.1 + (purple.1 - cyan.1) * s
+            b = cyan.2 + (purple.2 - cyan.2) * s
+        } else {
+            let s = (t - 0.5) * 2
+            r = purple.0 + (magenta.0 - purple.0) * s
+            g = purple.1 + (magenta.1 - purple.1) * s
+            b = purple.2 + (magenta.2 - purple.2) * s
+        }
+        let twinkle = 0.78 + 0.22 * sin(angle * 2.35 + time * 2.15)
+        let baseOpacity = (0.24 + u * 0.42) * pulse * Double(edgeFade) * twinkle
         return Color(red: r, green: g, blue: b).opacity(min(1, baseOpacity))
+    }
+
+    /// Selected onboarding chip: soft tint under labels
+    static var chipSelectedFill: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(red: 0.12, green: 0.22, blue: 0.42).opacity(0.55),
+                Color(red: 0.22, green: 0.12, blue: 0.38).opacity(0.45),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    static var chipStrokeGradient: LinearGradient {
+        LinearGradient(
+            colors: [gradientBlue, iosBlue, gradientMagenta],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 }
 
@@ -119,29 +152,38 @@ enum OnboardingTypography {
 struct OnboardingSpiralBackground: View {
     var focal: OnboardingSpiralFocal = .upper
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 45, paused: false)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            let rotation = t * 0.09
-            let pulse = 0.88 + 0.12 * sin(t * 0.7)
+        TimelineView(.animation(minimumInterval: 1 / 45, paused: reduceMotion)) { timeline in
+            let t = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+            let rotation = reduceMotion ? 0 : t * 0.14
+            let pulse = reduceMotion ? 1.0 : 0.84 + 0.16 * sin(t * 0.72)
             Canvas { context, size in
                 let center = focal.spiralCenter(in: size)
-                let maxR = hypot(size.width, size.height) * 0.58
-                let count = 480
+                let maxR = hypot(size.width, size.height) * 0.66
+                let count = 780
                 for i in 0..<count {
                     let u = Double(i) / Double(count)
-                    let angle = rotation + u * 15 * .pi
+                    let angle = rotation + u * 17 * .pi
                     let r = u * maxR
                     let x = center.x + CGFloat(cos(angle)) * CGFloat(r)
                     let y = center.y + CGFloat(sin(angle)) * CGFloat(r)
                     let dist = hypot(x - center.x, y - center.y)
-                    let edgeFade = max(0.12, min(1, 1.08 - Double(dist / max(1, maxR * 0.96))))
-                    let len: CGFloat = u < 0.35 ? 5.5 : 4.5
-                    let dash = Path(CGRect(x: -len / 2, y: -0.5, width: len, height: 1.1))
-                    let color = OnboardingPalette.spiralDashColor(angle: angle, u: u, pulse: pulse, edgeFade: CGFloat(edgeFade))
+                    let edgeFade = max(0.16, min(1, 1.12 - Double(dist / max(1, maxR * 0.94))))
+                    let len: CGFloat = u < 0.3 ? 7.5 : (u < 0.62 ? 5.8 : 4.6)
+                    let h: CGFloat = u < 0.38 ? 1.28 : 1.05
+                    let dash = Path(CGRect(x: -len / 2, y: -h / 2, width: len, height: h))
+                    let color = OnboardingPalette.spiralDashColor(
+                        angle: angle,
+                        u: u,
+                        pulse: pulse,
+                        edgeFade: CGFloat(edgeFade),
+                        time: t
+                    )
                     var c = context
                     c.translateBy(x: x, y: y)
-                    c.rotate(by: Angle(radians: angle + 1.15))
+                    c.rotate(by: Angle(radians: angle + 1.12))
                     c.fill(dash, with: .color(color))
                 }
             }

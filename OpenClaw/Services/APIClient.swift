@@ -24,8 +24,37 @@ enum APIError: LocalizedError {
         case .clientError(_, let message):
             return message ?? "Something went wrong"
         case .decodingError: return "Unexpected response format"
-        case .networkError: return "No internet connection"
+        case .networkError(let error): return Self.networkErrorDescription(for: error)
         case .unknown: return "Something went wrong"
+        }
+    }
+
+    private static func networkErrorDescription(for error: Error) -> String {
+        let urlError = error as? URLError ?? (error as NSError).userInfo[NSUnderlyingErrorKey] as? URLError
+        guard let urlError else {
+            return (error as NSError).localizedDescription
+        }
+        switch urlError.code {
+        case .notConnectedToInternet, .dataNotAllowed:
+            return "No internet connection"
+        case .networkConnectionLost:
+            return "The connection was lost. Try again."
+        case .timedOut:
+            return "The request timed out. Try again in a moment."
+        case .cannotFindHost, .dnsLookupFailed:
+            return "Can’t reach the server. Check your connection."
+        case .cannotConnectToHost:
+            return "Couldn’t connect to the server. Try again later."
+        case .secureConnectionFailed, .serverCertificateUntrusted, .clientCertificateRejected:
+            return "Secure connection failed. Check your network or try again."
+        case .cancelled:
+            return "The request was cancelled."
+        case .internationalRoamingOff, .callIsActive:
+            return urlError.localizedDescription
+        default:
+            return urlError.localizedDescription.isEmpty
+                ? "Couldn’t complete the request. Try again."
+                : urlError.localizedDescription
         }
     }
 }
@@ -59,7 +88,8 @@ actor APIClient {
         path: String,
         body: (any Encodable)? = nil,
         authenticated: Bool = true,
-        allowRetry: Bool = true
+        allowRetry: Bool = true,
+        timeoutInterval: TimeInterval? = nil
     ) async throws -> T {
         guard let url = URL(string: baseURL + path) else {
             throw APIError.invalidURL
@@ -68,6 +98,9 @@ actor APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
 
         if authenticated, let token = Keychain.loadString(forKey: AppConstants.accessTokenKey) {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -97,7 +130,12 @@ actor APIClient {
             }
         case 401:
             if authenticated && allowRetry && !isRefreshingToken && !path.contains("/auth/") {
-                return try await refreshAndRetry(method, path: path, body: body)
+                return try await refreshAndRetry(method, path: path, body: body, timeoutInterval: timeoutInterval)
+            }
+            if path == "/auth/login" || path == "/auth/apple" {
+                if let message = Self.extractErrorMessage(from: data) {
+                    throw APIError.clientError(401, message)
+                }
             }
             throw APIError.unauthorized
         case 403:
@@ -120,7 +158,8 @@ actor APIClient {
     private func refreshAndRetry<T: Decodable>(
         _ method: String,
         path: String,
-        body: (any Encodable)? = nil
+        body: (any Encodable)? = nil,
+        timeoutInterval: TimeInterval?
     ) async throws -> T {
         isRefreshingToken = true
         defer { isRefreshingToken = false }
@@ -138,15 +177,15 @@ actor APIClient {
         Keychain.saveString(tokens.accessToken, forKey: AppConstants.accessTokenKey)
         Keychain.saveString(tokens.refreshToken, forKey: AppConstants.refreshTokenKey)
 
-        return try await request(method, path: path, body: body, allowRetry: false)
+        return try await request(method, path: path, body: body, allowRetry: false, timeoutInterval: timeoutInterval)
     }
 
     func get<T: Decodable>(_ path: String) async throws -> T {
         try await request("GET", path: path)
     }
 
-    func post<T: Decodable>(_ path: String, body: (any Encodable)? = nil) async throws -> T {
-        try await request("POST", path: path, body: body)
+    func post<T: Decodable>(_ path: String, body: (any Encodable)? = nil, timeoutInterval: TimeInterval? = nil) async throws -> T {
+        try await request("POST", path: path, body: body, timeoutInterval: timeoutInterval)
     }
 
     func patch<T: Decodable>(_ path: String, body: (any Encodable)? = nil) async throws -> T {

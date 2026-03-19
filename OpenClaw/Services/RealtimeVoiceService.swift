@@ -82,6 +82,7 @@ final class RealtimeVoiceService: @unchecked Sendable {
     private var conversationTurns: [(user: String, agent: String)] = []
     private var lastUserTranscript = ""
     private var lastAgentTranscript = ""
+    private var inputTapInstalled = false
 
     private let queue = DispatchQueue(label: "com.openclaw.voice", qos: .userInteractive)
 
@@ -89,6 +90,15 @@ final class RealtimeVoiceService: @unchecked Sendable {
 
     func startSession(agentId: String) async throws {
         self.agentId = agentId
+
+        if SpeechRecognitionService.shared.isListening {
+            SpeechRecognitionService.shared.stopListening()
+        }
+
+        webSocket?.cancel(with: .normalClosure, reason: nil)
+        webSocket = nil
+        stopAudioEngine()
+
         state = .connecting
 
         let tokenResponse: VoiceSessionResponse = try await APIClient.shared.post(
@@ -112,7 +122,15 @@ final class RealtimeVoiceService: @unchecked Sendable {
         self.webSocket = ws
         ws.resume()
 
-        try await configureAudio()
+        do {
+            try configureAudio()
+        } catch {
+            webSocket?.cancel(with: .normalClosure, reason: nil)
+            webSocket = nil
+            stopAudioEngine()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            throw error
+        }
         startReceiving()
         startSessionTimer()
         startInputLevelMonitor()
@@ -183,6 +201,7 @@ final class RealtimeVoiceService: @unchecked Sendable {
         inputNode.installTap(onBus: 0, bufferSize: 4800, format: nativeFormat) { [weak self] buffer, _ in
             self?.processInputAudio(buffer: buffer)
         }
+        inputTapInstalled = true
 
         try audioEngine.start()
         player.play()
@@ -190,7 +209,10 @@ final class RealtimeVoiceService: @unchecked Sendable {
 
     private func stopAudioEngine() {
         playerNode?.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        if inputTapInstalled {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            inputTapInstalled = false
+        }
         audioEngine.stop()
         if let player = playerNode {
             audioEngine.detach(player)

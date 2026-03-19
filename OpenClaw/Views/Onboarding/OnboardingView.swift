@@ -71,8 +71,8 @@ struct OnboardingView: View {
 
     private func spiralFocal(for step: Int) -> OnboardingSpiralFocal {
         switch step {
-        case 4, 5, 6: return .center
-        default: return .upper
+        case 0 ... 3: return .upper
+        default: return .center
         }
     }
 }

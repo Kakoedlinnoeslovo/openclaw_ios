@@ -165,23 +165,44 @@ private struct OnboardingChipGrid<Title: View>: View {
     private func chip(_ title: String) -> some View {
         let on = selection.contains(title)
         return Button {
-            if on { selection.remove(title) } else { selection.insert(title) }
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+                if on { selection.remove(title) } else { selection.insert(title) }
+            }
         } label: {
-            Text(title)
-                .font(OnboardingTypography.chip)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-                .background(on ? Color(red: 44 / 255, green: 44 / 255, blue: 46 / 255) : OnboardingPalette.chipFill)
-                .clipShape(Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.white.opacity(on ? 0.22 : 0.08), lineWidth: 1)
-                )
-                .scaleEffect(on ? 1.03 : 1)
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(OnboardingTypography.chip)
+                    .foregroundStyle(.white)
+
+                if on {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(OnboardingPalette.chipStrokeGradient)
+                        .transition(.scale(scale: 0.5).combined(with: .opacity))
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(on ? AnyShapeStyle(OnboardingPalette.chipSelectedFill) : AnyShapeStyle(OnboardingPalette.chipFill))
+            }
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(
+                        on ? AnyShapeStyle(OnboardingPalette.chipStrokeGradient) : AnyShapeStyle(Color.white.opacity(0.1)),
+                        lineWidth: on ? 1.5 : 1
+                    )
+            }
+            .shadow(
+                color: on ? OnboardingPalette.iosBlue.opacity(0.28) : .clear,
+                radius: on ? 10 : 0,
+                y: on ? 3 : 0
+            )
+            .scaleEffect(on ? 1.02 : 1)
         }
         .buttonStyle(.plain)
-        .animation(.spring(response: 0.34, dampingFraction: 0.72), value: on)
+        .sensoryFeedback(.selection, trigger: on)
     }
 }
 
@@ -442,51 +463,233 @@ struct OnboardingAppleSignInStep: View {
     let preferredDisplayName: String
     let onSuccess: () -> Void
 
+    private enum EmailAuthMode: String, CaseIterable, Identifiable {
+        case signIn
+        case createAccount
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .signIn: return "Sign in"
+            case .createAccount: return "Create account"
+            }
+        }
+    }
+
     @State private var errorMessage: String?
+    @State private var email = ""
+    @State private var password = ""
+    @State private var emailAuthMode: EmailAuthMode = .signIn
+    @State private var isSubmittingEmail = false
+
+    private var trimmedEmail: String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedDisplayName: String {
+        preferredDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSubmitEmail: Bool {
+        !trimmedEmail.isEmpty && !password.isEmpty && !isSubmittingEmail
+    }
+
+    private var emailAuthSubtitle: String {
+        switch emailAuthMode {
+        case .signIn:
+            return "Use Sign in with Apple, or your email and password below."
+        case .createAccount:
+            return "Use Sign in with Apple, or create an account with email and password below."
+        }
+    }
+
+    private var emailPrimaryButtonTitle: String {
+        switch emailAuthMode {
+        case .signIn: return "Sign in with email"
+        case .createAccount: return "Create account"
+        }
+    }
+
+    private var gradientTitleText: String {
+        switch emailAuthMode {
+        case .signIn: return "Sign in"
+        case .createAccount: return "Create account"
+        }
+    }
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        ScrollView {
+            VStack(spacing: 24) {
+                Color.clear.frame(height: 28)
 
-            OnboardingGradientTitle(
-                text: "Sign in with Apple",
-                fontSize: 30,
-                textAlignment: .center,
-                frameAlignment: .center
-            )
-            Text("Create your account securely. No password to remember.")
-                .font(OnboardingTypography.body)
-                .foregroundStyle(Color.white.opacity(0.92))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                OnboardingGradientTitle(
+                    text: gradientTitleText,
+                    fontSize: 30,
+                    textAlignment: .center,
+                    frameAlignment: .center
+                )
+                Text(emailAuthSubtitle)
+                    .font(OnboardingTypography.body)
+                    .foregroundStyle(Color.white.opacity(0.92))
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+                    .padding(.horizontal, 32)
+
+                Picker("Email account action", selection: $emailAuthMode) {
+                    ForEach(EmailAuthMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 24)
+                .accessibilityIdentifier("onboarding_email_auth_mode")
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
+
+                SignInWithAppleButton(.signIn) { request in
+                    request.requestedScopes = [.fullName, .email]
+                } onCompletion: { result in
+                    handleApple(result)
+                }
+                .signInWithAppleButtonStyle(.white)
+                .frame(height: 54)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .padding(.horizontal, 24)
+                .accessibilityIdentifier("onboarding_continue_6")
+
+                Text("We use your Apple ID email to create your account.")
+                    .font(OnboardingTypography.caption)
+                    .foregroundStyle(OnboardingPalette.muted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+
+                onboardingEmailPasswordDivider
+
+                onboardingCredentialField(
+                    prompt: "Email",
+                    text: $email,
+                    contentType: .emailAddress,
+                    keyboardType: .emailAddress,
+                    accessibilityId: "onboarding_sign_in_email"
+                )
+
+                onboardingCredentialField(
+                    prompt: "Password",
+                    text: $password,
+                    isSecure: true,
+                    contentType: .password,
+                    keyboardType: .default,
+                    accessibilityId: "onboarding_sign_in_password"
+                )
+
+                Button(action: performEmailAuth) {
+                    ZStack {
+                        Text(emailPrimaryButtonTitle)
+                            .font(OnboardingTypography.cta)
+                            .foregroundStyle(canSubmitEmail ? Color.white : OnboardingPalette.muted)
+                            .opacity(isSubmittingEmail ? 0 : 1)
+                        if isSubmittingEmail {
+                            ProgressView()
+                                .tint(.white)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
+                    .background(canSubmitEmail ? OnboardingPalette.iosBlue : OnboardingPalette.chipFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSubmitEmail)
+                .padding(.horizontal, 24)
+                .accessibilityIdentifier("onboarding_email_password_sign_in")
+
+                Color.clear.frame(height: 20)
             }
+            .frame(maxWidth: .infinity)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .onChange(of: emailAuthMode) { _, _ in
+            errorMessage = nil
+        }
+    }
 
-            Spacer()
-
-            SignInWithAppleButton(.signIn) { request in
-                request.requestedScopes = [.fullName, .email]
-            } onCompletion: { result in
-                handleApple(result)
-            }
-            .signInWithAppleButtonStyle(.white)
-            .frame(height: 54)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .padding(.horizontal, 24)
-            .accessibilityIdentifier("onboarding_continue_6")
-
-            Text("We use your Apple ID email to create your account.")
+    private var onboardingEmailPasswordDivider: some View {
+        HStack(spacing: 16) {
+            Rectangle()
+                .fill(Color.white.opacity(0.2))
+                .frame(height: 0.5)
+            Text("or")
                 .font(OnboardingTypography.caption)
                 .foregroundStyle(OnboardingPalette.muted)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
-                .padding(.bottom, 36)
+            Rectangle()
+                .fill(Color.white.opacity(0.2))
+                .frame(height: 0.5)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 4)
+    }
+
+    private func onboardingCredentialField(
+        prompt: String,
+        text: Binding<String>,
+        isSecure: Bool = false,
+        contentType: UITextContentType,
+        keyboardType: UIKeyboardType,
+        accessibilityId: String
+    ) -> some View {
+        Group {
+            if isSecure {
+                SecureField("", text: text, prompt: Text(prompt).foregroundStyle(OnboardingPalette.muted))
+                    .textContentType(contentType)
+                    .textInputAutocapitalization(.never)
+            } else {
+                TextField("", text: text, prompt: Text(prompt).foregroundStyle(OnboardingPalette.muted))
+                    .textContentType(contentType)
+                    .keyboardType(keyboardType)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+        }
+        .font(.system(size: 18, weight: .medium))
+        .foregroundStyle(.white)
+        .multilineTextAlignment(.center)
+        .padding(.vertical, 18)
+        .padding(.horizontal, 16)
+        .background(OnboardingPalette.chipFill)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(.horizontal, 24)
+        .accessibilityIdentifier(accessibilityId)
+    }
+
+    private func performEmailAuth() {
+        guard canSubmitEmail else { return }
+        Task {
+            isSubmittingEmail = true
+            defer { isSubmittingEmail = false }
+            do {
+                errorMessage = nil
+                switch emailAuthMode {
+                case .signIn:
+                    try await auth.signIn(email: trimmedEmail, password: password)
+                case .createAccount:
+                    try await auth.signUp(
+                        email: trimmedEmail,
+                        password: password,
+                        displayName: trimmedDisplayName
+                    )
+                }
+                onSuccess()
+            } catch let error as APIError {
+                errorMessage = error.errorDescription
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

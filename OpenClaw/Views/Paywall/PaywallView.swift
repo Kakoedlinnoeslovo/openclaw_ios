@@ -28,10 +28,12 @@ struct PaywallView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
-            OnboardingSpiralBackground(focal: .center)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            if !embeddedInFunnel {
+                Color.black.ignoresSafeArea()
+                OnboardingSpiralBackground(focal: .center)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 16) {
@@ -79,8 +81,21 @@ struct PaywallView: View {
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity)
         .background {
-            Color.black
-                .ignoresSafeArea(edges: .bottom)
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0),
+                        Color.black.opacity(0.55),
+                        Color.black,
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 36)
+
+                Color.black
+            }
+            .ignoresSafeArea(edges: .bottom)
         }
     }
 
@@ -186,7 +201,7 @@ struct PaywallView: View {
         VStack(spacing: 10) {
             Text("GPT-5.4, Grok 4, Veo 3.1")
                 .font(OnboardingTypography.paywallHeadline)
-                .foregroundStyle(.white)
+                .foregroundStyle(OnboardingPalette.titleGradient)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("paywall_headline")

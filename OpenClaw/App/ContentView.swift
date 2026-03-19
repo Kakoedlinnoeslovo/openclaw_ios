@@ -37,24 +37,21 @@ struct MainTabView: View {
     @State private var agentService = AgentService.shared
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            TabView(selection: $selectedTab) {
+        Group {
+            switch selectedTab {
+            case 0:
                 HomeView()
-                    .tag(0)
-
-                Color.clear
-                    .tag(1)
-
+            case 2:
                 HistoryView()
-                    .tag(2)
-
-                SettingsView()
-                    .tag(3)
+            default:
+                HomeView()
             }
-            .toolbar(.hidden, for: .tabBar)
-
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             customTabBar
         }
+        .animation(.easeInOut(duration: 0.2), value: selectedTab)
         .fullScreenCover(isPresented: $showQuickChat) {
             NavigationStack {
                 if let agent = agentService.preferredAgent {
@@ -89,8 +86,24 @@ struct MainTabView: View {
         }
     }
 
-    private var dockBackground: Color {
+    private var dockTint: Color {
         colorScheme == .dark ? Color(white: 0.11) : Color(.systemGray6)
+    }
+
+    @ViewBuilder
+    private var dockChrome: some View {
+        let cap = Capsule(style: .continuous)
+        ZStack {
+            cap.fill(dockTint)
+            if #available(iOS 26.0, *) {
+                cap
+                    .fill(Color.clear)
+                    .glassEffect(.regular, in: cap)
+            } else {
+                cap.fill(.ultraThinMaterial)
+            }
+            cap.strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08), lineWidth: 1)
+        }
     }
 
     private var customTabBar: some View {
@@ -104,28 +117,19 @@ struct MainTabView: View {
             Spacer(minLength: 4)
 
             tabBarItem(icon: "clock.arrow.circlepath", iconInactive: "clock.arrow.circlepath", label: "History", tag: 2)
-
-            Spacer(minLength: 4)
-
-            tabBarItem(icon: "gearshape.fill", iconInactive: "gearshape", label: "Settings", tag: 3)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 11)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .frame(maxWidth: .infinity)
         .background {
-            Capsule(style: .continuous)
-                .fill(dockBackground)
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.42 : 0.12), radius: 20, y: 10)
+            dockChrome
         }
         .overlay(alignment: .center) {
             centerButton
         }
         .padding(.horizontal, 22)
-        .padding(.bottom, 14)
+        .padding(.bottom, 4)
     }
 
     private func tabBarItem(icon: String, iconInactive: String, label: String, tag: Int) -> some View {
@@ -133,18 +137,49 @@ struct MainTabView: View {
         return Button {
             withAnimation(.easeInOut(duration: 0.2)) { selectedTab = tag }
         } label: {
-            VStack(spacing: 3) {
-                Image(systemName: isSelected ? icon : iconInactive)
-                    .font(.system(size: 20))
-                    .foregroundStyle(isSelected ? theme.accent : .secondary.opacity(0.7))
-                    .scaleEffect(isSelected ? 1.05 : 1.0)
+            ZStack {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(
+                            RadialGradient(
+                                colors: [
+                                    theme.accent.opacity(colorScheme == .dark ? 0.5 : 0.38),
+                                    theme.accent.opacity(colorScheme == .dark ? 0.18 : 0.14),
+                                    theme.accent.opacity(0.03),
+                                    Color.clear,
+                                ],
+                                center: UnitPoint(x: 0.5, y: 0.36),
+                                startRadius: 2,
+                                endRadius: 52,
+                            )
+                        )
+                        .frame(width: 70, height: 58)
+                        .allowsHitTesting(false)
 
-                Text(label)
-                    .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? theme.accent : .secondary.opacity(0.7))
+                    Circle()
+                        .fill(theme.accent.opacity(colorScheme == .dark ? 0.45 : 0.35))
+                        .frame(width: 32, height: 32)
+                        .blur(radius: 20)
+                        .offset(y: -10)
+                        .blendMode(.plusLighter)
+                        .allowsHitTesting(false)
+                }
+
+                VStack(spacing: 3) {
+                    Image(systemName: isSelected ? icon : iconInactive)
+                        .font(.system(size: 20))
+                        .foregroundStyle(isSelected ? theme.accent : .secondary.opacity(0.7))
+                        .scaleEffect(isSelected ? 1.08 : 1.0)
+                        .shadow(color: isSelected ? theme.accent.opacity(0.55) : .clear, radius: 12, y: 0)
+
+                    Text(label)
+                        .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? theme.accent : .secondary.opacity(0.7))
+                }
             }
-            .frame(width: 64)
+            .frame(width: 76)
         }
+        .buttonStyle(.plain)
         .accessibilityIdentifier("tab_\(label.lowercased())")
     }
 
@@ -164,10 +199,10 @@ struct MainTabView: View {
                     )
                 )
                 .clipShape(Circle())
-                .shadow(color: theme.accent.opacity(0.55), radius: 18, y: 6)
-                .shadow(color: theme.accent.opacity(0.35), radius: 8, y: 2)
+                .shadow(color: theme.accent.opacity(0.4), radius: 8, y: 2)
         }
-        .offset(y: -12)
+        .buttonStyle(.plain)
+        .offset(y: -5)
         .accessibilityIdentifier("tab_plus")
     }
 }

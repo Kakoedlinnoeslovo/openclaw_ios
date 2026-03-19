@@ -76,7 +76,8 @@ final class AgentService {
         struct ClawHubBody: Codable { let slug: String }
         let response: ClawHubInstallResponse = try await APIClient.shared.post(
             "/agents/\(agentId)/skills/clawhub",
-            body: ClawHubBody(slug: slug)
+            body: ClawHubBody(slug: slug),
+            timeoutInterval: 300 // server-side clone/provision can exceed default ~30s idle window
         )
         if let index = agents.firstIndex(where: { $0.id == agentId }) {
             agents[index] = response.agent

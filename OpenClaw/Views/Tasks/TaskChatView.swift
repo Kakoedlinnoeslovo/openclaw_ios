@@ -130,6 +130,9 @@ struct TaskChatView: View {
             }
         }
         .onDisappear {
+            if speechService.isListening {
+                speechService.stopListening()
+            }
             webSocket.disconnect()
         }
     }
