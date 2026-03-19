@@ -54,6 +54,7 @@
 		A1000001000000000000002D /* RealtimeVoiceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002D /* RealtimeVoiceService.swift */; };
 		A1000001000000000000002E /* VoiceModeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002E /* VoiceModeView.swift */; };
 		A1000001000000000000002F /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000002F /* VoiceOrbView.swift */; };
+		A10000010000000000000030 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000030 /* PrivacyInfo.xcprivacy */; };
 		B10000010000000000000001 /* OpenClawUITestBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* OpenClawUITestBase.swift */; };
 		B10000010000000000000002 /* OnboardingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* OnboardingFlowTests.swift */; };
 		B10000010000000000000003 /* PaywallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* PaywallTests.swift */; };
@@ -122,6 +123,7 @@
 		A2000001000000000000002D /* RealtimeVoiceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeVoiceService.swift; sourceTree = "<group>"; };
 		A2000001000000000000002E /* VoiceModeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceModeView.swift; sourceTree = "<group>"; };
 		A2000001000000000000002F /* VoiceOrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrbView.swift; sourceTree = "<group>"; };
+		A20000010000000000000030 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A30000010000000000000001 /* OpenClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000010000000000000001 /* OpenClawUITestBase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawUITestBase.swift; sourceTree = "<group>"; };
 		B20000010000000000000002 /* OnboardingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFlowTests.swift; sourceTree = "<group>"; };
@@ -170,6 +172,7 @@
 				A50000010000000000000006 /* Views */,
 				A50000010000000000000007 /* Utilities */,
 				A20000010000000000000003 /* Assets.xcassets */,
+				A20000010000000000000030 /* PrivacyInfo.xcprivacy */,
 			);
 			path = OpenClaw;
 			sourceTree = "<group>";
@@ -424,6 +427,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000010000000000000003 /* Assets.xcassets in Resources */,
+				A10000010000000000000030 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -570,7 +574,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = RJWF6M2874;
+				DEVELOPMENT_TEAM = E2399V25ME;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OpenClaw/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OpenClaw;
@@ -608,7 +612,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = RJWF6M2874;
+				DEVELOPMENT_TEAM = E2399V25ME;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OpenClaw/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OpenClaw;

@@ -1,13 +1,8 @@
 import Foundation
 
 enum AppConstants {
-    #if DEBUG
-    static let apiBaseURL = "https://openclow.ngrok-free.app"
-    static let wsBaseURL = "wss://openclow.ngrok-free.app/ws"
-    #else
-    static let apiBaseURL = "https://openclow.ngrok-free.app"
-    static let wsBaseURL = "wss://openclow.ngrok-free.app/ws"
-    #endif
+    static let apiBaseURL = "https://64.23.222.65.nip.io"
+    static let wsBaseURL = "wss://64.23.222.65.nip.io/ws"
 
     static let appStoreID = "6743122046"
     static let keychainService = "com.openclaw.app"
